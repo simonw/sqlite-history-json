@@ -1,6 +1,29 @@
 [project]
-name = "placeholder"
+name = "sqlite-history-json"
 version = "0.1"
+description = "SQLite table history tracking using a JSON audit log"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "Simon Willison"}]
+license = "Apache-2.0"
+classifiers = []
+dependencies = [
+
+]
 
 [dependency-groups]
-dev = ["pytest"]
+dev = [
+    "pytest"
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+
+[project.urls]
+Homepage = "https://github.com/simonw/sqlite-history-json"
+Changelog = "https://github.com/simonw/sqlite-history-json/releases"
+Issues = "https://github.com/simonw/sqlite-history-json/issues"
+CI = "https://github.com/simonw/sqlite-history-json/actions"
+
