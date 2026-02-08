@@ -5,7 +5,15 @@ import sqlite3
 
 import pytest
 
-from sqlite_history_json import disable_tracking, enable_tracking, populate, restore
+from sqlite_history_json import (
+    change_group,
+    disable_tracking,
+    enable_tracking,
+    get_history,
+    get_row_history,
+    populate,
+    restore,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -982,3 +990,215 @@ class TestEdgeCases:
         ).fetchone()
         assert dict(row)["name"] == "NewWidget"
         assert dict(row)["price"] == 5.99
+
+
+# ---------------------------------------------------------------------------
+# Tests: change grouping
+# ---------------------------------------------------------------------------
+
+
+class TestChangeGrouping:
+    def test_groups_table_created_by_enable_tracking(self, simple_table):
+        """enable_tracking should create the _history_json groups table."""
+        enable_tracking(simple_table, "items")
+        assert table_exists(simple_table, "_history_json")
+
+    def test_audit_table_has_group_column(self, simple_table):
+        """The audit table should have a [group] column."""
+        enable_tracking(simple_table, "items")
+        info = simple_table.execute(
+            "PRAGMA table_info(_history_json_items)"
+        ).fetchall()
+        col_names = [r[1] for r in info]
+        assert "group" in col_names
+
+    def test_group_is_null_without_context_manager(self, simple_table):
+        """Without change_group, audit rows should have group = NULL."""
+        enable_tracking(simple_table, "items")
+        simple_table.execute(
+            "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+        )
+        rows = get_audit_rows(simple_table, "items")
+        assert rows[0]["group"] is None
+
+    def test_change_group_assigns_same_group(self, simple_table):
+        """All changes within change_group should share the same group id."""
+        enable_tracking(simple_table, "items")
+        with change_group(simple_table) as group_id:
+            simple_table.execute(
+                "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+            )
+            simple_table.execute(
+                "INSERT INTO items (id, name, price, quantity) VALUES (2, 'Gadget', 24.99, 50)"
+            )
+            simple_table.execute("UPDATE items SET name = 'Gizmo' WHERE id = 1")
+        rows = get_audit_rows(simple_table, "items")
+        assert len(rows) == 3
+        for row in rows:
+            assert row["group"] == group_id
+
+    def test_change_group_with_note(self, simple_table):
+        """A note can be attached to a change group."""
+        enable_tracking(simple_table, "items")
+        with change_group(simple_table, note="bulk import"):
+            simple_table.execute(
+                "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+            )
+        # Check the groups table for the note
+        group_row = simple_table.execute(
+            "SELECT * FROM _history_json ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert dict(group_row)["note"] == "bulk import"
+
+    def test_change_group_clears_current_after_exit(self, simple_table):
+        """After the context manager exits, current should be NULL."""
+        enable_tracking(simple_table, "items")
+        with change_group(simple_table, note="test"):
+            simple_table.execute(
+                "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+            )
+        # No row should have current = 1
+        current_rows = simple_table.execute(
+            "SELECT * FROM _history_json WHERE current = 1"
+        ).fetchall()
+        assert len(current_rows) == 0
+
+    def test_changes_after_group_have_null_group(self, simple_table):
+        """Changes made after the context manager exits should have group = NULL."""
+        enable_tracking(simple_table, "items")
+        with change_group(simple_table):
+            simple_table.execute(
+                "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+            )
+        # This insert is outside the group
+        simple_table.execute(
+            "INSERT INTO items (id, name, price, quantity) VALUES (2, 'Gadget', 24.99, 50)"
+        )
+        rows = get_audit_rows(simple_table, "items")
+        assert rows[0]["group"] is not None  # inside group
+        assert rows[1]["group"] is None  # outside group
+
+    def test_multiple_groups_are_distinct(self, simple_table):
+        """Two separate change_group blocks should produce different group ids."""
+        enable_tracking(simple_table, "items")
+        with change_group(simple_table, note="first") as gid1:
+            simple_table.execute(
+                "INSERT INTO items (id, name, price, quantity) VALUES (1, 'A', 1.0, 1)"
+            )
+        with change_group(simple_table, note="second") as gid2:
+            simple_table.execute(
+                "INSERT INTO items (id, name, price, quantity) VALUES (2, 'B', 2.0, 2)"
+            )
+        assert gid1 != gid2
+        rows = get_audit_rows(simple_table, "items")
+        assert rows[0]["group"] == gid1
+        assert rows[1]["group"] == gid2
+
+    def test_change_group_with_delete(self, simple_table):
+        """Delete operations should also be grouped."""
+        enable_tracking(simple_table, "items")
+        simple_table.execute(
+            "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+        )
+        with change_group(simple_table, note="cleanup") as group_id:
+            simple_table.execute("DELETE FROM items WHERE id = 1")
+        rows = get_audit_rows(simple_table, "items")
+        assert rows[0]["group"] is None  # the insert, outside group
+        assert rows[1]["group"] == group_id  # the delete, inside group
+
+    def test_change_group_yields_group_id(self, simple_table):
+        """The context manager should yield an integer group id."""
+        enable_tracking(simple_table, "items")
+        with change_group(simple_table) as group_id:
+            assert isinstance(group_id, int)
+
+    def test_change_group_note_can_be_updated(self, simple_table):
+        """The note on the current group can be updated during the block."""
+        enable_tracking(simple_table, "items")
+        with change_group(simple_table, note="initial") as group_id:
+            simple_table.execute(
+                "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+            )
+            # Update the note mid-transaction
+            simple_table.execute(
+                "UPDATE _history_json SET note = 'updated' WHERE id = ?",
+                [group_id],
+            )
+        group_row = simple_table.execute(
+            "SELECT note FROM _history_json WHERE id = ?", [group_id]
+        ).fetchone()
+        assert dict(group_row)["note"] == "updated"
+
+    def test_get_history_includes_group_info(self, simple_table):
+        """get_history should include group and group_note in results."""
+        enable_tracking(simple_table, "items")
+        with change_group(simple_table, note="batch"):
+            simple_table.execute(
+                "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+            )
+        entries = get_history(simple_table, "items")
+        assert len(entries) == 1
+        assert "group" in entries[0]
+        assert entries[0]["group"] is not None
+        assert "group_note" in entries[0]
+        assert entries[0]["group_note"] == "batch"
+
+    def test_get_history_null_group(self, simple_table):
+        """get_history should return None for group/group_note when no group."""
+        enable_tracking(simple_table, "items")
+        simple_table.execute(
+            "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+        )
+        entries = get_history(simple_table, "items")
+        assert entries[0]["group"] is None
+        assert entries[0]["group_note"] is None
+
+    def test_get_row_history_includes_group_info(self, simple_table):
+        """get_row_history should include group info."""
+        enable_tracking(simple_table, "items")
+        with change_group(simple_table, note="row-note"):
+            simple_table.execute(
+                "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+            )
+        entries = get_row_history(simple_table, "items", {"id": 1})
+        assert entries[0]["group_note"] == "row-note"
+
+    def test_change_group_across_multiple_tables(self, conn):
+        """A single change_group should group changes across different tracked tables."""
+        conn.execute(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, item_id INTEGER)"
+        )
+        enable_tracking(conn, "items")
+        enable_tracking(conn, "orders")
+        with change_group(conn, note="cross-table") as group_id:
+            conn.execute("INSERT INTO items (id, name) VALUES (1, 'Widget')")
+            conn.execute("INSERT INTO orders (id, item_id) VALUES (1, 1)")
+        item_rows = get_audit_rows(conn, "items")
+        order_rows = get_audit_rows(conn, "orders")
+        assert item_rows[0]["group"] == group_id
+        assert order_rows[0]["group"] == group_id
+
+    def test_populate_respects_change_group(self, simple_table_with_data):
+        """populate() called within change_group should tag entries with that group."""
+        conn = simple_table_with_data
+        enable_tracking(conn, "items", populate_table=False)
+        with change_group(conn, note="initial snapshot") as group_id:
+            populate(conn, "items")
+        rows = get_audit_rows(conn, "items")
+        assert len(rows) == 3
+        for row in rows:
+            assert row["group"] == group_id
+
+    def test_only_one_current_row_allowed(self, simple_table):
+        """A unique partial index should prevent multiple current=1 rows."""
+        enable_tracking(simple_table, "items")
+        simple_table.execute(
+            "INSERT INTO _history_json (note, current) VALUES ('first', 1)"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            simple_table.execute(
+                "INSERT INTO _history_json (note, current) VALUES ('second', 1)"
+            )
