@@ -16,6 +16,7 @@ from .core import (
     get_history,
     get_row_history,
     restore,
+    row_state_sql,
 )
 
 
@@ -174,6 +175,18 @@ def cmd_restore(args):
         conn.close()
 
 
+def cmd_row_state_sql(args):
+    conn = sqlite3.connect(args.database)
+    try:
+        sql = row_state_sql(conn, args.table)
+        sys.stdout.write(sql + "\n")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
 def cli(args=None):
     parser = argparse.ArgumentParser(
         prog="python -m sqlite_history_json",
@@ -249,6 +262,14 @@ def cli(args=None):
         help="Write the restored table to a different database file.",
     )
     p_restore.set_defaults(func=cmd_restore)
+
+    # row-state-sql
+    p_row_state_sql = subparsers.add_parser(
+        "row-state-sql",
+        help="Output the SQL query to reconstruct a row's state at a given version.",
+    )
+    p_row_state_sql.add_argument("table", help="Table name.")
+    p_row_state_sql.set_defaults(func=cmd_row_state_sql)
 
     parsed = parser.parse_args(args)
     parsed.func(parsed)

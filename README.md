@@ -415,6 +415,16 @@ python -m sqlite_history_json mydb.db restore items --id 3 --output-db backup.db
 
 `--replace-table` and `--output-db` are mutually exclusive. Neither `--timestamp` nor `--id` is required (restores full history if neither given).
 
+### `row-state-sql`
+
+Output the SQL query that reconstructs a row's state at a given audit version:
+
+```bash
+python -m sqlite_history_json mydb.db row-state-sql items
+```
+
+The output is a ready-to-execute SQL query using a recursive CTE and `json_patch()`. You can pipe it to other tools or use it directly with named parameters (`:pk` and `:target_id` for single-PK tables, `:pk_1`, `:pk_2`, ... for compound PKs).
+
 ## Development
 
 ```bash

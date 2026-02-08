@@ -610,3 +610,63 @@ class TestGetRowHistory:
         entries = get_row_history(conn, "items", {"id": 1}, limit=2)
         assert len(entries) == 2
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Tests: row-state-sql command
+# ---------------------------------------------------------------------------
+
+
+class TestRowStateSqlCommand:
+    def test_row_state_sql_outputs_sql(self, db_path):
+        run_cli(db_path, "enable", "items")
+        result = run_cli(db_path, "row-state-sql", "items")
+        assert result.returncode == 0
+        sql = result.stdout.strip()
+        assert "with entries as" in sql
+        assert "json_patch" in sql
+        assert "_history_json_items" in sql
+
+    def test_row_state_sql_single_pk_uses_pk_param(self, db_path):
+        run_cli(db_path, "enable", "items")
+        result = run_cli(db_path, "row-state-sql", "items")
+        sql = result.stdout.strip()
+        assert ":pk" in sql
+        assert ":pk_1" not in sql
+
+    def test_row_state_sql_compound_pk_uses_numbered_params(self, compound_pk_db):
+        run_cli(compound_pk_db, "enable", "user_roles")
+        result = run_cli(compound_pk_db, "row-state-sql", "user_roles")
+        sql = result.stdout.strip()
+        assert ":pk_1" in sql
+        assert ":pk_2" in sql
+
+    def test_row_state_sql_tracking_not_enabled(self, db_path):
+        result = run_cli(db_path, "row-state-sql", "items")
+        assert result.returncode == 1
+        assert "Tracking is not enabled" in result.stderr
+
+    def test_row_state_sql_is_executable(self, db_path):
+        """The output SQL can actually be executed against the database."""
+        run_cli(db_path, "enable", "items")
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+        )
+        conn.commit()
+
+        audit_id = conn.execute(
+            "SELECT id FROM _history_json_items ORDER BY id LIMIT 1"
+        ).fetchone()[0]
+        conn.close()
+
+        result = run_cli(db_path, "row-state-sql", "items")
+        sql = result.stdout.strip()
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(sql, {"pk": 1, "target_id": audit_id}).fetchone()
+        conn.close()
+        assert row is not None
+        state = json.loads(row[0])
+        assert state["name"] == "Widget"
