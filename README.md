@@ -1,5 +1,10 @@
 # sqlite-history-json
 
+[![PyPI](https://img.shields.io/pypi/v/sqlite-history-json.svg)](https://pypi.org/project/sqlite-history-json/)
+[![Changelog](https://img.shields.io/github/v/release/simonw/sqlite-history-json?include_prereleases&label=changelog)](https://github.com/simonw/sqlite-history-json/releases)
+[![Tests](https://github.com/simonw/sqlite-history-json/workflows/Test/badge.svg)](https://github.com/simonw/sqlite-history-json/actions?query=workflow%3ATest)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/simonw/sqlite-history-json/blob/main/LICENSE)
+
 A Python library for tracking SQLite table history using a JSON audit log.
 
 Based on the pattern described in [Tracking SQLite table history using a JSON audit log](https://til.simonwillison.net/sqlite/json-audit-log) by Simon Willison.
