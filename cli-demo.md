@@ -12,19 +12,19 @@ python -m sqlite_history_json --help
 
 ```output
 usage: python -m sqlite_history_json [-h]
-                                     database
-                                     {enable,disable,history,row-history,restore} ...
+                                     {enable,disable,history,row-history,restore,row-state-sql} ...
 
 SQLite table history tracking using a JSON audit log.
 
 positional arguments:
-  database              Path to the SQLite database file.
-  {enable,disable,history,row-history,restore}
+  {enable,disable,history,row-history,restore,row-state-sql}
     enable              Enable tracking for a table.
     disable             Disable tracking for a table.
     history             Show audit log entries for a table.
     row-history         Show audit log entries for a specific row.
     restore             Restore a table from its audit log.
+    row-state-sql       Output the SQL query to reconstruct a row's state at
+                        a given version.
 
 options:
   -h, --help            show this help message and exit
@@ -60,7 +60,7 @@ Created items table with 3 rows
 Enable history tracking on the items table. This creates the audit table and populates it with a snapshot of existing rows:
 
 ```bash
-python -m sqlite_history_json /tmp/cli-demo.db enable items 2>&1
+python -m sqlite_history_json enable /tmp/cli-demo.db items 2>&1
 ```
 
 ```output
@@ -89,7 +89,7 @@ Updated item 1 and deleted item 3
 The `history` command shows all audit log entries for the table as JSON, newest first:
 
 ```bash
-python -m sqlite_history_json /tmp/cli-demo.db history items
+python -m sqlite_history_json history /tmp/cli-demo.db items
 ```
 
 ```output
@@ -160,7 +160,7 @@ python -m sqlite_history_json /tmp/cli-demo.db history items
 Use `-n` to limit the number of entries:
 
 ```bash
-python -m sqlite_history_json /tmp/cli-demo.db history items -n 2
+python -m sqlite_history_json history /tmp/cli-demo.db items -n 2
 ```
 
 ```output
@@ -194,7 +194,7 @@ python -m sqlite_history_json /tmp/cli-demo.db history items -n 2
 The `row-history` command filters to a specific row by its primary key value:
 
 ```bash
-python -m sqlite_history_json /tmp/cli-demo.db row-history items 1
+python -m sqlite_history_json row-history /tmp/cli-demo.db items 1
 ```
 
 ```output
@@ -232,7 +232,7 @@ python -m sqlite_history_json /tmp/cli-demo.db row-history items 1
 Restore the table to an earlier state. By default this creates a new table called `items_restored`:
 
 ```bash
-python -m sqlite_history_json /tmp/cli-demo.db restore items --id 3 2>&1
+python -m sqlite_history_json restore /tmp/cli-demo.db items --id 3 2>&1
 ```
 
 ```output
@@ -262,7 +262,7 @@ for r in rows:
 Use `--output-db` to write the restored table to a separate database file:
 
 ```bash
-python -m sqlite_history_json /tmp/cli-demo.db restore items --id 3 --output-db /tmp/cli-demo-backup.db 2>&1
+python -m sqlite_history_json restore /tmp/cli-demo.db items --id 3 --output-db /tmp/cli-demo-backup.db 2>&1
 ```
 
 ```output
@@ -293,7 +293,7 @@ Tables in backup.db: ['items']
 Disable tracking drops the triggers but preserves the audit table:
 
 ```bash
-python -m sqlite_history_json /tmp/cli-demo.db disable items 2>&1
+python -m sqlite_history_json disable /tmp/cli-demo.db items 2>&1
 ```
 
 ```output

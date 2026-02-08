@@ -192,12 +192,11 @@ def cli(args=None):
         prog="python -m sqlite_history_json",
         description="SQLite table history tracking using a JSON audit log.",
     )
-    parser.add_argument("database", help="Path to the SQLite database file.")
-
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # enable
     p_enable = subparsers.add_parser("enable", help="Enable tracking for a table.")
+    p_enable.add_argument("database", help="Path to the SQLite database file.")
     p_enable.add_argument("table", help="Table name to track.")
     p_enable.add_argument(
         "--no-populate",
@@ -208,6 +207,7 @@ def cli(args=None):
 
     # disable
     p_disable = subparsers.add_parser("disable", help="Disable tracking for a table.")
+    p_disable.add_argument("database", help="Path to the SQLite database file.")
     p_disable.add_argument("table", help="Table name to stop tracking.")
     p_disable.set_defaults(func=cmd_disable)
 
@@ -215,6 +215,7 @@ def cli(args=None):
     p_history = subparsers.add_parser(
         "history", help="Show audit log entries for a table."
     )
+    p_history.add_argument("database", help="Path to the SQLite database file.")
     p_history.add_argument("table", help="Table name.")
     p_history.add_argument(
         "-n", type=int, default=None, help="Maximum number of entries to show."
@@ -225,6 +226,7 @@ def cli(args=None):
     p_row_history = subparsers.add_parser(
         "row-history", help="Show audit log entries for a specific row."
     )
+    p_row_history.add_argument("database", help="Path to the SQLite database file.")
     p_row_history.add_argument("table", help="Table name.")
     p_row_history.add_argument(
         "pk_values",
@@ -240,6 +242,7 @@ def cli(args=None):
     p_restore = subparsers.add_parser(
         "restore", help="Restore a table from its audit log."
     )
+    p_restore.add_argument("database", help="Path to the SQLite database file.")
     p_restore.add_argument("table", help="Table name to restore.")
     p_restore.add_argument(
         "--id", type=int, default=None, help="Restore up to this audit log entry ID."
@@ -268,6 +271,7 @@ def cli(args=None):
         "row-state-sql",
         help="Output the SQL query to reconstruct a row's state at a given version.",
     )
+    p_row_state_sql.add_argument("database", help="Path to the SQLite database file.")
     p_row_state_sql.add_argument("table", help="Table name.")
     p_row_state_sql.set_defaults(func=cmd_row_state_sql)
 

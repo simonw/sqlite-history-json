@@ -90,7 +90,7 @@ class TestHelp:
         assert "sqlite_history_json" in result.stdout
 
     def test_enable_help(self, db_path):
-        result = run_cli(db_path, "enable", "--help")
+        result = run_cli("enable", "--help")
         assert result.returncode == 0
         assert "--no-populate" in result.stdout
 
@@ -102,7 +102,7 @@ class TestHelp:
 
 class TestEnableCommand:
     def test_enable_creates_audit_table(self, db_path):
-        result = run_cli(db_path, "enable", "items")
+        result = run_cli("enable", db_path, "items")
         assert result.returncode == 0
         assert "Tracking enabled" in result.stderr
 
@@ -115,7 +115,7 @@ class TestEnableCommand:
         assert tables[0][0] == "_history_json_items"
 
     def test_enable_populates_existing_rows(self, db_path_with_data):
-        result = run_cli(db_path_with_data, "enable", "items")
+        result = run_cli("enable", db_path_with_data, "items")
         assert result.returncode == 0
 
         conn = sqlite3.connect(db_path_with_data)
@@ -126,7 +126,7 @@ class TestEnableCommand:
         assert count == 3
 
     def test_enable_no_populate(self, db_path_with_data):
-        result = run_cli(db_path_with_data, "enable", "items", "--no-populate")
+        result = run_cli("enable", db_path_with_data, "items", "--no-populate")
         assert result.returncode == 0
 
         conn = sqlite3.connect(db_path_with_data)
@@ -137,8 +137,8 @@ class TestEnableCommand:
         assert count == 0
 
     def test_enable_idempotent(self, db_path):
-        run_cli(db_path, "enable", "items")
-        result = run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
+        result = run_cli("enable", db_path, "items")
         assert result.returncode == 0
 
 
@@ -149,8 +149,8 @@ class TestEnableCommand:
 
 class TestDisableCommand:
     def test_disable_removes_triggers(self, db_path):
-        run_cli(db_path, "enable", "items")
-        result = run_cli(db_path, "disable", "items")
+        run_cli("enable", db_path, "items")
+        result = run_cli("disable", db_path, "items")
         assert result.returncode == 0
         assert "Tracking disabled" in result.stderr
 
@@ -162,8 +162,8 @@ class TestDisableCommand:
         assert len(triggers) == 0
 
     def test_disable_keeps_audit_table(self, db_path):
-        run_cli(db_path, "enable", "items")
-        run_cli(db_path, "disable", "items")
+        run_cli("enable", db_path, "items")
+        run_cli("disable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         exists = conn.execute(
@@ -180,7 +180,7 @@ class TestDisableCommand:
 
 class TestHistoryCommand:
     def test_history_returns_json(self, db_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         # Insert a row directly
         conn = sqlite3.connect(db_path)
@@ -190,7 +190,7 @@ class TestHistoryCommand:
         conn.commit()
         conn.close()
 
-        result = run_cli(db_path, "history", "items")
+        result = run_cli("history", db_path, "items")
         assert result.returncode == 0
         entries = json.loads(result.stdout)
         assert len(entries) == 1
@@ -199,7 +199,7 @@ class TestHistoryCommand:
         assert entries[0]["updated_values"]["name"] == "Widget"
 
     def test_history_newest_first(self, db_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -209,14 +209,14 @@ class TestHistoryCommand:
         conn.commit()
         conn.close()
 
-        result = run_cli(db_path, "history", "items")
+        result = run_cli("history", db_path, "items")
         entries = json.loads(result.stdout)
         assert len(entries) == 2
         assert entries[0]["operation"] == "update"
         assert entries[1]["operation"] == "insert"
 
     def test_history_limit(self, db_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -227,21 +227,21 @@ class TestHistoryCommand:
         conn.commit()
         conn.close()
 
-        result = run_cli(db_path, "history", "items", "-n", "2")
+        result = run_cli("history", db_path, "items", "-n", "2")
         entries = json.loads(result.stdout)
         assert len(entries) == 2
 
     def test_history_populated_data(self, db_path_with_data):
-        run_cli(db_path_with_data, "enable", "items")
+        run_cli("enable", db_path_with_data, "items")
 
-        result = run_cli(db_path_with_data, "history", "items")
+        result = run_cli("history", db_path_with_data, "items")
         entries = json.loads(result.stdout)
         assert len(entries) == 3
         # All should be insert operations from population
         assert all(e["operation"] == "insert" for e in entries)
 
     def test_history_delete_has_null_updated_values(self, db_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -251,7 +251,7 @@ class TestHistoryCommand:
         conn.commit()
         conn.close()
 
-        result = run_cli(db_path, "history", "items")
+        result = run_cli("history", db_path, "items")
         entries = json.loads(result.stdout)
         delete_entry = entries[0]  # newest first
         assert delete_entry["operation"] == "delete"
@@ -265,7 +265,7 @@ class TestHistoryCommand:
 
 class TestRowHistoryCommand:
     def test_row_history_single_pk(self, db_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -278,14 +278,14 @@ class TestRowHistoryCommand:
         conn.commit()
         conn.close()
 
-        result = run_cli(db_path, "row-history", "items", "1")
+        result = run_cli("row-history", db_path, "items", "1")
         assert result.returncode == 0
         entries = json.loads(result.stdout)
         assert len(entries) == 2  # insert + update for id=1 only
         assert all(e["pk"] == {"id": 1} for e in entries)
 
     def test_row_history_compound_pk(self, compound_pk_db):
-        run_cli(compound_pk_db, "enable", "user_roles")
+        run_cli("enable", compound_pk_db, "user_roles")
 
         conn = sqlite3.connect(compound_pk_db)
         conn.execute(
@@ -300,20 +300,20 @@ class TestRowHistoryCommand:
         conn.commit()
         conn.close()
 
-        result = run_cli(compound_pk_db, "row-history", "user_roles", "1", "2")
+        result = run_cli("row-history", compound_pk_db, "user_roles", "1", "2")
         assert result.returncode == 0
         entries = json.loads(result.stdout)
         assert len(entries) == 2  # insert + update
         assert all(e["pk"] == {"user_id": 1, "role_id": 2} for e in entries)
 
     def test_row_history_wrong_pk_count(self, db_path):
-        run_cli(db_path, "enable", "items")
-        result = run_cli(db_path, "row-history", "items", "1", "2")
+        run_cli("enable", db_path, "items")
+        result = run_cli("row-history", db_path, "items", "1", "2")
         assert result.returncode == 1
         assert "1 primary key column(s)" in result.stderr
 
     def test_row_history_limit(self, db_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -324,7 +324,7 @@ class TestRowHistoryCommand:
         conn.commit()
         conn.close()
 
-        result = run_cli(db_path, "row-history", "items", "1", "-n", "2")
+        result = run_cli("row-history", db_path, "items", "1", "-n", "2")
         entries = json.loads(result.stdout)
         assert len(entries) == 2
 
@@ -336,7 +336,7 @@ class TestRowHistoryCommand:
 
 class TestRestoreCommand:
     def test_restore_creates_new_table(self, db_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -345,7 +345,7 @@ class TestRestoreCommand:
         conn.commit()
         conn.close()
 
-        result = run_cli(db_path, "restore", "items")
+        result = run_cli("restore", db_path, "items")
         assert result.returncode == 0
         assert "items_restored" in result.stderr
 
@@ -355,7 +355,7 @@ class TestRestoreCommand:
         assert len(rows) == 1
 
     def test_restore_with_id(self, db_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -370,7 +370,7 @@ class TestRestoreCommand:
         ).fetchone()[0]
         conn.close()
 
-        result = run_cli(db_path, "restore", "items", "--id", str(audit_id))
+        result = run_cli("restore", db_path, "items", "--id", str(audit_id))
         assert result.returncode == 0
 
         conn = sqlite3.connect(db_path)
@@ -379,7 +379,7 @@ class TestRestoreCommand:
         assert row[0] == "Widget"
 
     def test_restore_with_timestamp(self, db_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -389,7 +389,7 @@ class TestRestoreCommand:
         conn.close()
 
         result = run_cli(
-            db_path, "restore", "items", "--timestamp", "9999-12-31 23:59:59"
+            "restore", db_path, "items", "--timestamp", "9999-12-31 23:59:59"
         )
         assert result.returncode == 0
 
@@ -399,7 +399,7 @@ class TestRestoreCommand:
         assert len(rows) == 1
 
     def test_restore_new_table_name(self, db_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -408,7 +408,7 @@ class TestRestoreCommand:
         conn.commit()
         conn.close()
 
-        result = run_cli(db_path, "restore", "items", "--new-table", "items_v2")
+        result = run_cli("restore", db_path, "items", "--new-table", "items_v2")
         assert result.returncode == 0
         assert "items_v2" in result.stderr
 
@@ -418,7 +418,7 @@ class TestRestoreCommand:
         assert len(rows) == 1
 
     def test_restore_replace_table(self, db_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -433,7 +433,7 @@ class TestRestoreCommand:
         conn.close()
 
         result = run_cli(
-            db_path, "restore", "items", "--id", str(audit_id), "--replace-table"
+            "restore", db_path, "items", "--id", str(audit_id), "--replace-table"
         )
         assert result.returncode == 0
         assert "replaced" in result.stderr
@@ -444,7 +444,7 @@ class TestRestoreCommand:
         assert row[0] == "Widget"
 
     def test_restore_output_db(self, db_path, tmp_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -457,7 +457,7 @@ class TestRestoreCommand:
         conn.close()
 
         output_db = str(tmp_path / "backup.db")
-        result = run_cli(db_path, "restore", "items", "--output-db", output_db)
+        result = run_cli("restore", db_path, "items", "--output-db", output_db)
         assert result.returncode == 0
         assert "backup.db" in result.stderr
 
@@ -467,7 +467,7 @@ class TestRestoreCommand:
         assert len(rows) == 2
 
     def test_restore_replace_and_output_db_mutually_exclusive(self, db_path, tmp_path):
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
         output_db = str(tmp_path / "backup.db")
         result = run_cli(
             db_path,
@@ -619,8 +619,8 @@ class TestGetRowHistory:
 
 class TestRowStateSqlCommand:
     def test_row_state_sql_outputs_sql(self, db_path):
-        run_cli(db_path, "enable", "items")
-        result = run_cli(db_path, "row-state-sql", "items")
+        run_cli("enable", db_path, "items")
+        result = run_cli("row-state-sql", db_path, "items")
         assert result.returncode == 0
         sql = result.stdout.strip()
         assert "with entries as" in sql
@@ -628,27 +628,27 @@ class TestRowStateSqlCommand:
         assert "_history_json_items" in sql
 
     def test_row_state_sql_single_pk_uses_pk_param(self, db_path):
-        run_cli(db_path, "enable", "items")
-        result = run_cli(db_path, "row-state-sql", "items")
+        run_cli("enable", db_path, "items")
+        result = run_cli("row-state-sql", db_path, "items")
         sql = result.stdout.strip()
         assert ":pk" in sql
         assert ":pk_1" not in sql
 
     def test_row_state_sql_compound_pk_uses_numbered_params(self, compound_pk_db):
-        run_cli(compound_pk_db, "enable", "user_roles")
-        result = run_cli(compound_pk_db, "row-state-sql", "user_roles")
+        run_cli("enable", compound_pk_db, "user_roles")
+        result = run_cli("row-state-sql", compound_pk_db, "user_roles")
         sql = result.stdout.strip()
         assert ":pk_1" in sql
         assert ":pk_2" in sql
 
     def test_row_state_sql_tracking_not_enabled(self, db_path):
-        result = run_cli(db_path, "row-state-sql", "items")
+        result = run_cli("row-state-sql", db_path, "items")
         assert result.returncode == 1
         assert "Tracking is not enabled" in result.stderr
 
     def test_row_state_sql_is_executable(self, db_path):
         """The output SQL can actually be executed against the database."""
-        run_cli(db_path, "enable", "items")
+        run_cli("enable", db_path, "items")
 
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -661,7 +661,7 @@ class TestRowStateSqlCommand:
         ).fetchone()[0]
         conn.close()
 
-        result = run_cli(db_path, "row-state-sql", "items")
+        result = run_cli("row-state-sql", db_path, "items")
         sql = result.stdout.strip()
 
         conn = sqlite3.connect(db_path)

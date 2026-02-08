@@ -346,7 +346,7 @@ The `entries` CTE finds the most recent `insert` for the row at or before the ta
 All commands use the form:
 
 ```bash
-python -m sqlite_history_json <database> <command> [options]
+python -m sqlite_history_json <command> <database> [options]
 ```
 
 ### `enable`
@@ -354,13 +354,13 @@ python -m sqlite_history_json <database> <command> [options]
 Enable tracking for a table:
 
 ```bash
-python -m sqlite_history_json mydb.db enable items
+python -m sqlite_history_json enable mydb.db items
 ```
 
 Skip populating the audit log with existing rows:
 
 ```bash
-python -m sqlite_history_json mydb.db enable items --no-populate
+python -m sqlite_history_json enable mydb.db items --no-populate
 ```
 
 ### `disable`
@@ -368,7 +368,7 @@ python -m sqlite_history_json mydb.db enable items --no-populate
 Disable tracking (drops triggers, keeps audit data):
 
 ```bash
-python -m sqlite_history_json mydb.db disable items
+python -m sqlite_history_json disable mydb.db items
 ```
 
 ### `history`
@@ -376,8 +376,8 @@ python -m sqlite_history_json mydb.db disable items
 Show audit log entries for a table as JSON (newest first):
 
 ```bash
-python -m sqlite_history_json mydb.db history items
-python -m sqlite_history_json mydb.db history items -n 20
+python -m sqlite_history_json history mydb.db items
+python -m sqlite_history_json history mydb.db items -n 20
 ```
 
 ### `row-history`
@@ -385,8 +385,8 @@ python -m sqlite_history_json mydb.db history items -n 20
 Show audit log entries for a specific row. PK values are positional, matched to PK columns in their defined order:
 
 ```bash
-python -m sqlite_history_json mydb.db row-history items 42
-python -m sqlite_history_json mydb.db row-history user_roles 1 2
+python -m sqlite_history_json row-history mydb.db items 42
+python -m sqlite_history_json row-history mydb.db user_roles 1 2
 ```
 
 ### `restore`
@@ -395,22 +395,22 @@ Restore a table from its audit log:
 
 ```bash
 # Restore to a new table (default: items_restored)
-python -m sqlite_history_json mydb.db restore items
+python -m sqlite_history_json restore mydb.db items
 
 # Restore up to a specific audit entry ID
-python -m sqlite_history_json mydb.db restore items --id 3
+python -m sqlite_history_json restore mydb.db items --id 3
 
 # Restore up to a specific timestamp
-python -m sqlite_history_json mydb.db restore items --timestamp "2024-06-15 14:30:00"
+python -m sqlite_history_json restore mydb.db items --timestamp "2024-06-15 14:30:00"
 
 # Restore with a custom table name
-python -m sqlite_history_json mydb.db restore items --id 3 --new-table items_v2
+python -m sqlite_history_json restore mydb.db items --id 3 --new-table items_v2
 
 # Replace the original table with the restored version
-python -m sqlite_history_json mydb.db restore items --id 3 --replace-table
+python -m sqlite_history_json restore mydb.db items --id 3 --replace-table
 
 # Restore to a different database file
-python -m sqlite_history_json mydb.db restore items --id 3 --output-db backup.db
+python -m sqlite_history_json restore mydb.db items --id 3 --output-db backup.db
 ```
 
 `--replace-table` and `--output-db` are mutually exclusive. Neither `--timestamp` nor `--id` is required (restores full history if neither given).
@@ -420,7 +420,7 @@ python -m sqlite_history_json mydb.db restore items --id 3 --output-db backup.db
 Output the SQL query that reconstructs a row's state at a given audit version:
 
 ```bash
-python -m sqlite_history_json mydb.db row-state-sql items
+python -m sqlite_history_json row-state-sql mydb.db items
 ```
 
 The output is a ready-to-execute SQL query using a recursive CTE and `json_patch()`. You can pipe it to other tools or use it directly with named parameters (`:pk` and `:target_id` for single-PK tables, `:pk_1`, `:pk_2`, ... for compound PKs).

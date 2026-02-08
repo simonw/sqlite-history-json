@@ -16,7 +16,7 @@ conn.commit()
 conn.close()
 print("Table created.")
 PYEOF
-uv run python -m sqlite_history_json /tmp/demo_row_state.db enable items
+uv run python -m sqlite_history_json enable /tmp/demo_row_state.db items
 
 ```
 
@@ -50,7 +50,7 @@ Done - 5 operations on row id=1
 Let's check the audit log to see all the entries:
 
 ```bash
-uv run python -m sqlite_history_json /tmp/demo_row_state.db history items
+uv run python -m sqlite_history_json history /tmp/demo_row_state.db items
 ```
 
 ```output
@@ -119,7 +119,7 @@ uv run python -m sqlite_history_json /tmp/demo_row_state.db history items
 Now use `row-state-sql` to get the reconstruction query for this table:
 
 ```bash
-uv run python -m sqlite_history_json /tmp/demo_row_state.db row-state-sql items
+uv run python -m sqlite_history_json row-state-sql /tmp/demo_row_state.db items
 ```
 
 ```output
@@ -200,7 +200,7 @@ conn.execute("CREATE TABLE IF NOT EXISTS untracked (id INTEGER PRIMARY KEY, val 
 conn.commit()
 conn.close()
 PYEOF
-uv run python -m sqlite_history_json /tmp/demo_row_state.db row-state-sql untracked 2>&1; echo "Exit code: $?"
+uv run python -m sqlite_history_json row-state-sql /tmp/demo_row_state.db untracked 2>&1; echo "Exit code: $?"
 
 ```
 
@@ -228,8 +228,8 @@ conn.commit()
 conn.close()
 print("Compound PK table created.")
 PYEOF
-uv run python -m sqlite_history_json /tmp/demo_row_state.db enable user_roles
-uv run python -m sqlite_history_json /tmp/demo_row_state.db row-state-sql user_roles
+uv run python -m sqlite_history_json enable /tmp/demo_row_state.db user_roles
+uv run python -m sqlite_history_json row-state-sql /tmp/demo_row_state.db user_roles
 
 ```
 
