@@ -8,6 +8,24 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from itertools import count
+
+
+_savepoint_counter = count(1)
+
+
+def _run_in_savepoint(conn: sqlite3.Connection, fn) -> None:
+    """Execute fn() atomically using a SAVEPOINT."""
+    savepoint_name = f"sqlite_history_json_sp_{next(_savepoint_counter)}"
+    conn.execute(f"SAVEPOINT [{savepoint_name}]")
+    try:
+        fn()
+    except Exception:
+        conn.execute(f"ROLLBACK TO [{savepoint_name}]")
+        conn.execute(f"RELEASE [{savepoint_name}]")
+        raise
+    else:
+        conn.execute(f"RELEASE [{savepoint_name}]")
 
 
 def _audit_table_name(table_name: str) -> str:
@@ -179,6 +197,7 @@ def enable_tracking(
     table_name: str,
     *,
     populate_table: bool = True,
+    atomic: bool = True,
 ) -> None:
     """Create audit table and triggers for the given table.
 
@@ -194,26 +213,29 @@ def enable_tracking(
         table_name: Name of the table to track.
         populate_table: If True (the default), snapshot all existing rows into
             the audit log so history is complete from this point.
+        atomic: If True (the default), wrap setup and optional populate
+            work in a SAVEPOINT so the operation is atomic.
 
     This is idempotent: calling it twice has no additional effect.
     """
-    columns = _get_table_info(conn, table_name)
-    pk_cols = _get_pk_columns(columns)
-    non_pk_cols = _get_non_pk_columns(columns)
-    audit_name = _audit_table_name(table_name)
+    def _enable_tracking_inner() -> None:
+        columns = _get_table_info(conn, table_name)
+        pk_cols = _get_pk_columns(columns)
+        non_pk_cols = _get_non_pk_columns(columns)
+        audit_name = _audit_table_name(table_name)
 
-    if not pk_cols:
-        raise ValueError(
-            f"Table {table_name!r} has no explicit primary key. "
-            "sqlite-history-json requires an explicit PRIMARY KEY."
+        if not pk_cols:
+            raise ValueError(
+                f"Table {table_name!r} has no explicit primary key. "
+                "sqlite-history-json requires an explicit PRIMARY KEY."
+            )
+
+        # Build audit table PK column definitions with pk_ prefix
+        pk_col_defs = ", ".join(
+            f"[{_audit_pk_col_name(c['name'])}] {c['type']}" for c in pk_cols
         )
 
-    # Build audit table PK column definitions with pk_ prefix
-    pk_col_defs = ", ".join(
-        f"[{_audit_pk_col_name(c['name'])}] {c['type']}" for c in pk_cols
-    )
-
-    create_audit = f"""CREATE TABLE IF NOT EXISTS [{audit_name}] (
+        create_audit = f"""CREATE TABLE IF NOT EXISTS [{audit_name}] (
     id INTEGER PRIMARY KEY,
     timestamp TEXT,
     operation TEXT,
@@ -221,52 +243,74 @@ def enable_tracking(
     updated_values TEXT
 );"""
 
-    conn.execute(create_audit)
+        conn.execute(create_audit)
 
-    # Build and create triggers
-    insert_sql = _build_insert_trigger_sql(
-        table_name, audit_name, pk_cols, non_pk_cols
-    )
-    update_sql = _build_update_trigger_sql(
-        table_name, audit_name, pk_cols, non_pk_cols
-    )
-    delete_sql = _build_delete_trigger_sql(table_name, audit_name, pk_cols)
+        # Build and create triggers
+        insert_sql = _build_insert_trigger_sql(
+            table_name, audit_name, pk_cols, non_pk_cols
+        )
+        update_sql = _build_update_trigger_sql(
+            table_name, audit_name, pk_cols, non_pk_cols
+        )
+        delete_sql = _build_delete_trigger_sql(table_name, audit_name, pk_cols)
 
-    conn.execute(insert_sql)
-    conn.execute(update_sql)
-    conn.execute(delete_sql)
+        conn.execute(insert_sql)
+        conn.execute(update_sql)
+        conn.execute(delete_sql)
 
-    # Create indexes for common query patterns
-    conn.execute(
-        f"CREATE INDEX IF NOT EXISTS [{audit_name}_timestamp] "
-        f"ON [{audit_name}] (timestamp)"
-    )
-    audit_pk_col_names_str = ", ".join(
-        f"[{_audit_pk_col_name(c['name'])}]" for c in pk_cols
-    )
-    conn.execute(
-        f"CREATE INDEX IF NOT EXISTS [{audit_name}_pk] "
-        f"ON [{audit_name}] ({audit_pk_col_names_str})"
-    )
+        # Create indexes for common query patterns
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS [{audit_name}_timestamp] "
+            f"ON [{audit_name}] (timestamp)"
+        )
+        audit_pk_col_names_str = ", ".join(
+            f"[{_audit_pk_col_name(c['name'])}]" for c in pk_cols
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS [{audit_name}_pk] "
+            f"ON [{audit_name}] ({audit_pk_col_names_str})"
+        )
 
-    if populate_table:
-        # Only populate if audit table is empty (preserves idempotency)
-        count = conn.execute(
-            f"SELECT count(*) FROM [{audit_name}]"
-        ).fetchone()[0]
-        if count == 0:
-            populate(conn, table_name)
+        if populate_table:
+            # Only populate if audit table is empty (preserves idempotency)
+            row_count = conn.execute(
+                f"SELECT count(*) FROM [{audit_name}]"
+            ).fetchone()[0]
+            if row_count == 0:
+                populate(conn, table_name)
+
+    if atomic:
+        _run_in_savepoint(conn, _enable_tracking_inner)
+    else:
+        _enable_tracking_inner()
 
 
-def disable_tracking(conn: sqlite3.Connection, table_name: str) -> None:
+def disable_tracking(
+    conn: sqlite3.Connection,
+    table_name: str,
+    *,
+    atomic: bool = True,
+) -> None:
     """Drop triggers for the given table. Keeps the audit table intact.
 
     This is idempotent: calling it when no triggers exist has no effect.
+
+    Args:
+        conn: SQLite connection.
+        table_name: Name of the tracked table.
+        atomic: If True (the default), wrap trigger drops in a SAVEPOINT
+            so the operation is atomic.
     """
-    audit_name = _audit_table_name(table_name)
-    conn.execute(f"DROP TRIGGER IF EXISTS [{audit_name}_insert]")
-    conn.execute(f"DROP TRIGGER IF EXISTS [{audit_name}_update]")
-    conn.execute(f"DROP TRIGGER IF EXISTS [{audit_name}_delete]")
+    def _disable_tracking_inner() -> None:
+        audit_name = _audit_table_name(table_name)
+        conn.execute(f"DROP TRIGGER IF EXISTS [{audit_name}_insert]")
+        conn.execute(f"DROP TRIGGER IF EXISTS [{audit_name}_update]")
+        conn.execute(f"DROP TRIGGER IF EXISTS [{audit_name}_delete]")
+
+    if atomic:
+        _run_in_savepoint(conn, _disable_tracking_inner)
+    else:
+        _disable_tracking_inner()
 
 
 def populate(conn: sqlite3.Connection, table_name: str) -> None:

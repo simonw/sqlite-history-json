@@ -449,6 +449,61 @@ class TestDisableTracking:
 
 
 # ---------------------------------------------------------------------------
+# Tests: transaction wrapping
+# ---------------------------------------------------------------------------
+
+
+class TestTransactionWrapping:
+    def test_enable_tracking_default_uses_transaction(self, simple_table):
+        conn = simple_table
+        conn.execute("BEGIN")
+        try:
+            enable_tracking(conn, "items")
+            conn.execute("ROLLBACK")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+        assert not table_exists(conn, "_history_json_items")
+        assert trigger_names(conn, "items") == []
+
+    def test_enable_tracking_default_nests_inside_outer_transaction(self, simple_table):
+        conn = simple_table
+        conn.execute("BEGIN")
+        try:
+            enable_tracking(conn, "items")
+            # Should work before outer transaction commits.
+            conn.execute(
+                "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+            )
+            conn.execute("ROLLBACK")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+        assert not table_exists(conn, "_history_json_items")
+
+    def test_enable_tracking_atomic_false_does_not_start_savepoint(self, simple_table):
+        conn = simple_table
+        enable_tracking(conn, "items", atomic=False)
+        assert table_exists(conn, "_history_json_items")
+
+    def test_disable_tracking_default_uses_transaction(self, simple_table):
+        conn = simple_table
+        enable_tracking(conn, "items")
+        conn.execute("BEGIN")
+        try:
+            disable_tracking(conn, "items")
+            conn.execute("ROLLBACK")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+        # Trigger drops should have been rolled back with outer transaction.
+        assert len(trigger_names(conn, "items")) == 3
+
+
+# ---------------------------------------------------------------------------
 # Tests: populate
 # ---------------------------------------------------------------------------
 

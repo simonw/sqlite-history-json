@@ -100,6 +100,20 @@ enable_tracking(conn, "items", populate_table=False)
 populate(conn, "items")  # manually snapshot when ready
 ```
 
+### Transaction control during setup/teardown
+
+By default, `enable_tracking()` and `disable_tracking()` wrap their work in a SQLite `SAVEPOINT` (`atomic=True`). This makes each operation atomic and safe whether or not you're already inside your own transaction.
+
+```python
+# Default: atomic via savepoint
+enable_tracking(conn, "items")
+disable_tracking(conn, "items")
+
+# Opt out if you want to fully manage transaction boundaries yourself
+enable_tracking(conn, "items", atomic=False)
+disable_tracking(conn, "items", atomic=False)
+```
+
 ### Restore to a point in time
 
 ```python
@@ -178,19 +192,23 @@ enable_tracking(conn, "order items")
 
 ## API reference
 
-### `enable_tracking(conn, table_name, *, populate_table=True)`
+### `enable_tracking(conn, table_name, *, populate_table=True, atomic=True)`
 
 Creates the audit table `_history_json_{table_name}` and installs INSERT, UPDATE, and DELETE triggers on the source table. Also creates indexes on the audit table for timestamp and primary key columns.
 
 By default, snapshots all existing rows into the audit log (equivalent to calling `populate()` automatically). Pass `populate_table=False` to skip this.
 
+By default, runs inside a SQLite `SAVEPOINT` (`atomic=True`) so setup is atomic and safe to call both inside and outside an existing transaction. Pass `atomic=False` to skip this wrapper.
+
 Idempotent: calling it twice has no additional effect (auto-populate only runs if the audit table is empty).
 
 **Requirements:** The table must have an explicit `PRIMARY KEY` (not just `rowid`).
 
-### `disable_tracking(conn, table_name)`
+### `disable_tracking(conn, table_name, *, atomic=True)`
 
 Drops the triggers. The audit table and its data are preserved.
+
+By default, runs inside a SQLite `SAVEPOINT` (`atomic=True`) so trigger removal is atomic and safe inside or outside an existing transaction. Pass `atomic=False` to skip this wrapper.
 
 Idempotent: calling it when no triggers exist is a no-op.
 

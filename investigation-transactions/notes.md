@@ -1,0 +1,21 @@
+# Notes
+
+- Started investigation of transaction behavior.
+- Located implementation in src/sqlite_history_json/core.py.
+- No explicit conn.commit()/conn.rollback() calls in library functions.
+- Transaction control keywords BEGIN in file are inside trigger SQL strings only.
+- Ran transaction probe with uv run python:
+  - Insert inside BEGIN/ROLLBACK produced no audit rows.
+  - Insert inside BEGIN/COMMIT produced audit row.
+  - Update+delete inside BEGIN/ROLLBACK produced no additional audit rows.
+- Ran DDL probe:
+  - enable_tracking() called inside BEGIN then ROLLBACK leaves no audit table and no triggers.
+- Conclusion: library relies entirely on caller/SQLite transaction boundaries; audit rows are atomic with source row changes.
+- New request: implement tests first for transaction=True default using savepoints; run pytest to confirm failures; then implement and rerun.
+- Added transaction keyword argument (default True) to enable_tracking() and disable_tracking().
+- Implemented savepoint wrapper helper _run_in_savepoint() and wrapped enable/disable operations when transaction=True.
+- Used SAVEPOINT/ROLLBACK TO/RELEASE so behavior is safe both with and without an outer transaction.
+- Updated root README.md to document new transaction=True behavior for enable_tracking/disable_tracking and added usage snippet.
+- Renamed public API parameter from transaction to atomic for enable_tracking/disable_tracking.
+- Updated tests and README examples/API signatures to use atomic=True/False wording.
+- Removed README installation section since package is not on PyPI yet.
