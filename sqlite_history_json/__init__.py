@@ -7,6 +7,7 @@ from .core import (
     get_row_history,
     populate,
     restore,
+    row_state_sql,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "restore",
     "get_history",
     "get_row_history",
+    "row_state_sql",
 ]

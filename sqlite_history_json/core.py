@@ -630,3 +630,88 @@ def get_row_history(
             }
         )
     return result
+
+
+def row_state_sql(
+    conn: sqlite3.Connection,
+    table_name: str,
+) -> str:
+    """Return a SQL query that reconstructs a row's state at a given audit version.
+
+    The returned query uses ``json_patch()`` in a recursive CTE to fold
+    all audit entries from the most recent insert through the target version.
+
+    The query takes named parameters:
+
+    - ``:pk`` for single-PK tables, or ``:pk_1``, ``:pk_2``, ... for
+      compound PKs (numbered by PK column order).
+    - ``:target_id`` — the audit log entry ID to reconstruct up to.
+
+    The query returns a single row with one column (the JSON state),
+    or no rows if the PK has no history at that version.  The JSON
+    state is ``NULL`` if the row was deleted at that version.
+
+    Args:
+        conn: SQLite connection.
+        table_name: Name of the tracked table.
+
+    Raises:
+        ValueError: If tracking is not enabled for the table.
+    """
+    audit_name = _audit_table_name(table_name)
+
+    # Check that the audit table exists
+    exists = conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?",
+        (audit_name,),
+    ).fetchone()[0]
+    if not exists:
+        raise ValueError(
+            f"Tracking is not enabled for table {table_name!r} "
+            f"(audit table {audit_name!r} does not exist)."
+        )
+
+    columns = _get_table_info(conn, table_name)
+    pk_cols = _get_pk_columns(columns)
+
+    # Build PK parameter references and WHERE fragments
+    if len(pk_cols) == 1:
+        pk_params = {_audit_pk_col_name(pk_cols[0]["name"]): ":pk"}
+    else:
+        pk_params = {
+            _audit_pk_col_name(c["name"]): f":pk_{i}"
+            for i, c in enumerate(pk_cols, 1)
+        }
+
+    pk_where = " AND ".join(
+        f"[{col}] = {param}" for col, param in pk_params.items()
+    )
+
+    return (
+        f"WITH entries AS (\n"
+        f"  SELECT id, operation, updated_values,\n"
+        f"         ROW_NUMBER() OVER (ORDER BY id) AS rn\n"
+        f"  FROM [{audit_name}]\n"
+        f"  WHERE {pk_where}\n"
+        f"    AND id <= :target_id\n"
+        f"    AND id >= (\n"
+        f"      SELECT MAX(id) FROM [{audit_name}]\n"
+        f"      WHERE {pk_where}\n"
+        f"        AND operation = 'insert' AND id <= :target_id\n"
+        f"    )\n"
+        f"),\n"
+        f"folded AS (\n"
+        f"  SELECT rn, operation, updated_values AS state\n"
+        f"  FROM entries WHERE rn = 1\n"
+        f"\n"
+        f"  UNION ALL\n"
+        f"\n"
+        f"  SELECT e.rn, e.operation,\n"
+        f"    CASE WHEN e.operation = 'delete' THEN NULL\n"
+        f"         ELSE json_patch(f.state, e.updated_values)\n"
+        f"    END\n"
+        f"  FROM folded f\n"
+        f"  JOIN entries e ON e.rn = f.rn + 1\n"
+        f")\n"
+        f"SELECT state FROM folded ORDER BY rn DESC LIMIT 1"
+    )

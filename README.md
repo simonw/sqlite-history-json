@@ -275,6 +275,72 @@ Returns audit log entries for a table as a list of dicts, newest first. Each dic
 
 Same as `get_history()` but filtered to a specific row. `pk_values` is a dict mapping primary key column names to values, e.g. `{"id": 1}` or `{"user_id": 1, "role_id": 2}`.
 
+### `row_state_sql(conn, table_name)`
+
+Returns a SQL query string that reconstructs a single row's state at a given audit version using a recursive CTE and `json_patch()`. The query runs entirely inside SQLite with no Python-side replay.
+
+The returned query takes named parameters:
+- **`:pk`** for single-PK tables, or **`:pk_1`**, **`:pk_2`**, ... for compound PKs (numbered by PK column order)
+- **`:target_id`** — the audit log entry ID to reconstruct up to
+
+The query returns one row with a single `state` column containing the JSON object of non-PK column values at that version, or `NULL` if the row was deleted, or no rows if the PK has no history at that version.
+
+Raises `ValueError` if tracking is not enabled for the table.
+
+```python
+from sqlite_history_json import row_state_sql
+
+sql = row_state_sql(conn, "items")
+# sql is a ready-to-execute query string
+
+# Reconstruct row state at audit entry #3
+result = conn.execute(sql, {"pk": 1, "target_id": 3}).fetchone()
+if result is None:
+    print("No history for this PK at this version")
+elif result[0] is None:
+    print("Row was deleted at this version")
+else:
+    state = json.loads(result[0])
+    print(state)  # {"name": "Widget", "price": 9.99, "quantity": 100}
+
+# Compound primary key
+sql = row_state_sql(conn, "user_roles")
+result = conn.execute(sql, {"pk_1": 1, "pk_2": 2, "target_id": 5}).fetchone()
+```
+
+For a table `items` with primary key `id`, the generated SQL looks like:
+
+```sql
+WITH entries AS (
+  SELECT id, operation, updated_values,
+         ROW_NUMBER() OVER (ORDER BY id) AS rn
+  FROM [_history_json_items]
+  WHERE [pk_id] = :pk
+    AND id <= :target_id
+    AND id >= (
+      SELECT MAX(id) FROM [_history_json_items]
+      WHERE [pk_id] = :pk
+        AND operation = 'insert' AND id <= :target_id
+    )
+),
+folded AS (
+  SELECT rn, operation, updated_values AS state
+  FROM entries WHERE rn = 1
+
+  UNION ALL
+
+  SELECT e.rn, e.operation,
+    CASE WHEN e.operation = 'delete' THEN NULL
+         ELSE json_patch(f.state, e.updated_values)
+    END
+  FROM folded f
+  JOIN entries e ON e.rn = f.rn + 1
+)
+SELECT state FROM folded ORDER BY rn DESC LIMIT 1
+```
+
+The `entries` CTE finds the most recent `insert` for the row at or before the target version, then collects all entries from that insert through the target. The `folded` CTE recursively applies `json_patch()` to merge each entry's changed values into the accumulated state. Handles delete-and-reinsert cycles correctly by always starting from the latest insert.
+
 ## Command-line interface
 
 All commands use the form:
