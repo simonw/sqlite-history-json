@@ -511,3 +511,122 @@ def restore(
         return table_name
 
     return target_name
+
+
+def get_history(
+    conn: sqlite3.Connection,
+    table_name: str,
+    *,
+    limit: int | None = None,
+) -> list[dict]:
+    """Return audit log entries for a table, newest first.
+
+    Each entry is a dict with keys: id, timestamp, operation, pk, updated_values.
+    The ``pk`` dict uses original column names (no ``pk_`` prefix).
+    For deletes, ``updated_values`` is None.
+
+    Args:
+        conn: SQLite connection.
+        table_name: Name of the tracked table.
+        limit: Maximum number of entries to return.
+    """
+    columns = _get_table_info(conn, table_name)
+    pk_cols = _get_pk_columns(columns)
+    audit_name = _audit_table_name(table_name)
+
+    sql = f"SELECT * FROM [{audit_name}] ORDER BY id DESC"
+    if limit is not None:
+        sql += f" LIMIT {int(limit)}"
+
+    audit_col_names = [
+        desc[0]
+        for desc in conn.execute(f"SELECT * FROM [{audit_name}] LIMIT 0").description
+    ]
+    rows = conn.execute(sql).fetchall()
+
+    result = []
+    for row in rows:
+        row_dict = dict(zip(audit_col_names, row))
+        pk = {
+            c["name"]: row_dict[_audit_pk_col_name(c["name"])] for c in pk_cols
+        }
+        updated_values = (
+            json.loads(row_dict["updated_values"])
+            if row_dict["updated_values"] is not None
+            else None
+        )
+        result.append(
+            {
+                "id": row_dict["id"],
+                "timestamp": row_dict["timestamp"],
+                "operation": row_dict["operation"],
+                "pk": pk,
+                "updated_values": updated_values,
+            }
+        )
+    return result
+
+
+def get_row_history(
+    conn: sqlite3.Connection,
+    table_name: str,
+    pk_values: dict[str, object],
+    *,
+    limit: int | None = None,
+) -> list[dict]:
+    """Return audit log entries for a specific row, newest first.
+
+    Same format as :func:`get_history`, filtered by primary key values.
+
+    Args:
+        conn: SQLite connection.
+        table_name: Name of the tracked table.
+        pk_values: Dict mapping PK column names to their values,
+            e.g. ``{"id": 1}`` or ``{"user_id": 1, "role_id": 2}``.
+        limit: Maximum number of entries to return.
+    """
+    columns = _get_table_info(conn, table_name)
+    pk_cols = _get_pk_columns(columns)
+    audit_name = _audit_table_name(table_name)
+
+    where_parts = []
+    params: list = []
+    for col in pk_cols:
+        audit_col = _audit_pk_col_name(col["name"])
+        where_parts.append(f"[{audit_col}] = ?")
+        params.append(pk_values[col["name"]])
+
+    sql = (
+        f"SELECT * FROM [{audit_name}] WHERE {' AND '.join(where_parts)} "
+        f"ORDER BY id DESC"
+    )
+    if limit is not None:
+        sql += f" LIMIT {int(limit)}"
+
+    audit_col_names = [
+        desc[0]
+        for desc in conn.execute(f"SELECT * FROM [{audit_name}] LIMIT 0").description
+    ]
+    rows = conn.execute(sql, params).fetchall()
+
+    result = []
+    for row in rows:
+        row_dict = dict(zip(audit_col_names, row))
+        pk = {
+            c["name"]: row_dict[_audit_pk_col_name(c["name"])] for c in pk_cols
+        }
+        updated_values = (
+            json.loads(row_dict["updated_values"])
+            if row_dict["updated_values"] is not None
+            else None
+        )
+        result.append(
+            {
+                "id": row_dict["id"],
+                "timestamp": row_dict["timestamp"],
+                "operation": row_dict["operation"],
+                "pk": pk,
+                "updated_values": updated_values,
+            }
+        )
+    return result

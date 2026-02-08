@@ -158,6 +158,39 @@ restored_name = restore(
 )
 ```
 
+### Query the audit log
+
+```python
+from sqlite_history_json import get_history, get_row_history
+
+# Get all history for a table, newest first
+entries = get_history(conn, "items")
+
+# Limit to most recent 10 entries
+entries = get_history(conn, "items", limit=10)
+
+# Get history for a specific row
+entries = get_row_history(conn, "items", {"id": 1})
+
+# Compound primary keys
+entries = get_row_history(conn, "user_roles", {"user_id": 1, "role_id": 2})
+```
+
+Each entry is a dict:
+```python
+{
+    "id": 1,
+    "timestamp": "2024-06-15 14:30:00.123",
+    "operation": "insert",
+    "pk": {"id": 1},
+    "updated_values": {"name": "Widget", "price": 9.99, "quantity": 100}
+}
+```
+
+- `pk` uses original column names (no `pk_` prefix)
+- `updated_values` preserves the JSON conventions (`{"null": 1}` for NULL, `{"hex": "..."}` for BLOBs)
+- For deletes, `updated_values` is `None`
+
 ### Disable tracking
 
 ```python
@@ -231,6 +264,90 @@ Replays audit log entries to reconstruct the table state. All parameters after `
 - **`swap`**: If `True`, atomically replaces the original table
 
 Returns the name of the restored table.
+
+### `get_history(conn, table_name, *, limit=None)`
+
+Returns audit log entries for a table as a list of dicts, newest first. Each dict has keys: `id`, `timestamp`, `operation`, `pk`, `updated_values`.
+
+- **`limit`**: Maximum number of entries to return
+
+### `get_row_history(conn, table_name, pk_values, *, limit=None)`
+
+Same as `get_history()` but filtered to a specific row. `pk_values` is a dict mapping primary key column names to values, e.g. `{"id": 1}` or `{"user_id": 1, "role_id": 2}`.
+
+## Command-line interface
+
+All commands use the form:
+
+```bash
+python -m sqlite_history_json <database> <command> [options]
+```
+
+### `enable`
+
+Enable tracking for a table:
+
+```bash
+python -m sqlite_history_json mydb.db enable items
+```
+
+Skip populating the audit log with existing rows:
+
+```bash
+python -m sqlite_history_json mydb.db enable items --no-populate
+```
+
+### `disable`
+
+Disable tracking (drops triggers, keeps audit data):
+
+```bash
+python -m sqlite_history_json mydb.db disable items
+```
+
+### `history`
+
+Show audit log entries for a table as JSON (newest first):
+
+```bash
+python -m sqlite_history_json mydb.db history items
+python -m sqlite_history_json mydb.db history items -n 20
+```
+
+### `row-history`
+
+Show audit log entries for a specific row. PK values are positional, matched to PK columns in their defined order:
+
+```bash
+python -m sqlite_history_json mydb.db row-history items 42
+python -m sqlite_history_json mydb.db row-history user_roles 1 2
+```
+
+### `restore`
+
+Restore a table from its audit log:
+
+```bash
+# Restore to a new table (default: items_restored)
+python -m sqlite_history_json mydb.db restore items
+
+# Restore up to a specific audit entry ID
+python -m sqlite_history_json mydb.db restore items --id 3
+
+# Restore up to a specific timestamp
+python -m sqlite_history_json mydb.db restore items --timestamp "2024-06-15 14:30:00"
+
+# Restore with a custom table name
+python -m sqlite_history_json mydb.db restore items --id 3 --new-table items_v2
+
+# Replace the original table with the restored version
+python -m sqlite_history_json mydb.db restore items --id 3 --replace-table
+
+# Restore to a different database file
+python -m sqlite_history_json mydb.db restore items --id 3 --output-db backup.db
+```
+
+`--replace-table` and `--output-db` are mutually exclusive. Neither `--timestamp` nor `--id` is required (restores full history if neither given).
 
 ## Development
 
