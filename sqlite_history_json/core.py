@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from itertools import count
 
 
@@ -26,6 +27,57 @@ def _run_in_savepoint(conn: sqlite3.Connection, fn) -> None:
         raise
     else:
         conn.execute(f"release [{savepoint_name}]")
+
+
+_GROUPS_TABLE = "_history_json"
+
+
+def _ensure_groups_table(conn: sqlite3.Connection) -> None:
+    """Create the shared change-groups table if it does not already exist."""
+    conn.execute(
+        f"""create table if not exists [{_GROUPS_TABLE}] (
+    id integer primary key,
+    note text,
+    current integer
+)"""
+    )
+    conn.execute(
+        f"create index if not exists [{_GROUPS_TABLE}_current] "
+        f"on [{_GROUPS_TABLE}] (current)"
+    )
+
+
+@contextmanager
+def change_group(conn: sqlite3.Connection, note: str | None = None):
+    """Context manager that groups all audit entries created within it.
+
+    Every audit-log row inserted by triggers while this context is active
+    will share the same ``group`` id.  An optional *note* can be attached
+    to describe the batch of changes.
+
+    Yields the integer group id so callers can reference it later.
+
+    Usage::
+
+        with change_group(conn, note="bulk import") as group_id:
+            conn.execute("INSERT INTO items ...")
+            conn.execute("UPDATE items SET ...")
+    """
+    _ensure_groups_table(conn)
+    # Clear any stale current marker (defensive, e.g. after a crash)
+    conn.execute(
+        f"update [{_GROUPS_TABLE}] set current = null where current = 1"
+    )
+    cursor = conn.execute(
+        f"insert into [{_GROUPS_TABLE}] (note, current) values (?, 1)", [note]
+    )
+    group_id = cursor.lastrowid
+    try:
+        yield group_id
+    finally:
+        conn.execute(
+            f"update [{_GROUPS_TABLE}] set current = null where current = 1"
+        )
 
 
 def _audit_table_name(table_name: str) -> str:
@@ -95,15 +147,18 @@ def _build_insert_trigger_sql(
 
     json_obj = f"json_object({', '.join(json_args)})" if json_args else "'{{}}'"
 
+    group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1)"
+
     return f"""create trigger if not exists [{audit_name}_insert]
 after insert on [{table_name}]
 begin
-    insert into [{audit_name}] (timestamp, operation, {audit_pk_col_names}, updated_values)
+    insert into [{audit_name}] (timestamp, operation, {audit_pk_col_names}, updated_values, [group])
     values (
         strftime('%Y-%m-%d %H:%M:%f', 'now'),
         'insert',
         {pk_new_refs},
-        {json_obj}
+        {json_obj},
+        {group_subquery}
     );
 end;"""
 
@@ -155,15 +210,18 @@ def _build_update_trigger_sql(
 
         json_expr = expr
 
+    group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1)"
+
     return f"""create trigger if not exists [{audit_name}_update]
 after update on [{table_name}]
 begin
-    insert into [{audit_name}] (timestamp, operation, {audit_pk_col_names}, updated_values)
+    insert into [{audit_name}] (timestamp, operation, {audit_pk_col_names}, updated_values, [group])
     values (
         strftime('%Y-%m-%d %H:%M:%f', 'now'),
         'update',
         {pk_new_refs},
-        {json_expr}
+        {json_expr},
+        {group_subquery}
     );
 end;"""
 
@@ -179,15 +237,18 @@ def _build_delete_trigger_sql(
     )
     pk_old_refs = ", ".join(f"OLD.[{c['name']}]" for c in pk_cols)
 
+    group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1)"
+
     return f"""create trigger if not exists [{audit_name}_delete]
 after delete on [{table_name}]
 begin
-    insert into [{audit_name}] (timestamp, operation, {audit_pk_col_names}, updated_values)
+    insert into [{audit_name}] (timestamp, operation, {audit_pk_col_names}, updated_values, [group])
     values (
         strftime('%Y-%m-%d %H:%M:%f', 'now'),
         'delete',
         {pk_old_refs},
-        null
+        null,
+        {group_subquery}
     );
 end;"""
 
@@ -230,6 +291,9 @@ def enable_tracking(
                 "sqlite-history-json requires an explicit PRIMARY KEY."
             )
 
+        # Ensure the shared groups table exists (triggers reference it)
+        _ensure_groups_table(conn)
+
         # Build audit table PK column definitions with pk_ prefix
         pk_col_defs = ", ".join(
             f"[{_audit_pk_col_name(c['name'])}] {c['type']}" for c in pk_cols
@@ -240,7 +304,8 @@ def enable_tracking(
     timestamp text,
     operation text,
     {pk_col_defs},
-    updated_values text
+    updated_values text,
+    [group] integer references [{_GROUPS_TABLE}](id)
 );"""
 
         conn.execute(create_audit)
@@ -356,9 +421,11 @@ def populate(conn: sqlite3.Connection, table_name: str) -> None:
 
         json_str = json.dumps(json_dict)
 
+        group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1)"
         conn.execute(
-            f"insert into [{audit_name}] (timestamp, operation, {pk_insert_cols}, updated_values) "
-            f"values (strftime('%Y-%m-%d %H:%M:%f', 'now'), 'insert', {pk_insert_params}, ?)",
+            f"insert into [{audit_name}] (timestamp, operation, {pk_insert_cols}, updated_values, [group]) "
+            f"values (strftime('%Y-%m-%d %H:%M:%f', 'now'), 'insert', {pk_insert_params}, ?, "
+            f"{group_subquery})",
             pk_values + [json_str],
         )
 
@@ -534,19 +601,21 @@ def get_history(
     pk_cols = _get_pk_columns(columns)
     audit_name = _audit_table_name(table_name)
 
-    sql = f"select * from [{audit_name}] order by id desc"
+    sql = (
+        f"select a.*, g.note as group_note from [{audit_name}] a "
+        f"left join [{_GROUPS_TABLE}] g on a.[group] = g.id "
+        f"order by a.id desc"
+    )
     if limit is not None:
         sql += f" limit {int(limit)}"
 
-    audit_col_names = [
-        desc[0]
-        for desc in conn.execute(f"select * from [{audit_name}] limit 0").description
-    ]
-    rows = conn.execute(sql).fetchall()
+    cursor = conn.execute(sql)
+    col_names = [desc[0] for desc in cursor.description]
+    rows = cursor.fetchall()
 
     result = []
     for row in rows:
-        row_dict = dict(zip(audit_col_names, row))
+        row_dict = dict(zip(col_names, row))
         pk = {
             c["name"]: row_dict[_audit_pk_col_name(c["name"])] for c in pk_cols
         }
@@ -562,6 +631,8 @@ def get_history(
                 "operation": row_dict["operation"],
                 "pk": pk,
                 "updated_values": updated_values,
+                "group": row_dict["group"],
+                "group_note": row_dict["group_note"],
             }
         )
     return result
@@ -593,25 +664,25 @@ def get_row_history(
     params: list = []
     for col in pk_cols:
         audit_col = _audit_pk_col_name(col["name"])
-        where_parts.append(f"[{audit_col}] = ?")
+        where_parts.append(f"a.[{audit_col}] = ?")
         params.append(pk_values[col["name"]])
 
     sql = (
-        f"select * from [{audit_name}] where {' and '.join(where_parts)} "
-        f"order by id desc"
+        f"select a.*, g.note as group_note from [{audit_name}] a "
+        f"left join [{_GROUPS_TABLE}] g on a.[group] = g.id "
+        f"where {' and '.join(where_parts)} "
+        f"order by a.id desc"
     )
     if limit is not None:
         sql += f" limit {int(limit)}"
 
-    audit_col_names = [
-        desc[0]
-        for desc in conn.execute(f"select * from [{audit_name}] limit 0").description
-    ]
-    rows = conn.execute(sql, params).fetchall()
+    cursor = conn.execute(sql, params)
+    col_names = [desc[0] for desc in cursor.description]
+    rows = cursor.fetchall()
 
     result = []
     for row in rows:
-        row_dict = dict(zip(audit_col_names, row))
+        row_dict = dict(zip(col_names, row))
         pk = {
             c["name"]: row_dict[_audit_pk_col_name(c["name"])] for c in pk_cols
         }
@@ -627,6 +698,8 @@ def get_row_history(
                 "operation": row_dict["operation"],
                 "pk": pk,
                 "updated_values": updated_values,
+                "group": row_dict["group"],
+                "group_note": row_dict["group_note"],
             }
         )
     return result

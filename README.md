@@ -40,10 +40,23 @@ For a table called `items` with primary key `id`, the audit table `_history_json
 | `operation` | TEXT | `'insert'`, `'update'`, or `'delete'` |
 | `pk_id` | (matches source PK type) | The primary key of the tracked row (prefixed with `pk_`) |
 | `updated_values` | TEXT | JSON object of changed columns (NULL for deletes) |
+| `group` | INTEGER | Foreign key to `_history_json.id` (NULL when no group is active) |
 
 Primary key columns in the audit table are always prefixed with `pk_` to distinguish them from the audit table's own columns. For compound primary keys, each PK column gets its own `pk_`-prefixed column (e.g., `pk_user_id`, `pk_role_id`).
 
 Indexes are automatically created on `timestamp` and the PK column(s) for efficient querying.
+
+### Change groups table
+
+A shared `_history_json` table (no suffix) is created when tracking is first enabled. It stores change-group metadata:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PRIMARY KEY | Auto-incrementing group identifier |
+| `note` | TEXT | Optional description of the batch of changes |
+| `current` | INTEGER | Set to `1` during an active `change_group()` block, otherwise NULL |
+
+The `current` column is indexed. During a `change_group()` context, triggers use `(SELECT id FROM _history_json WHERE current = 1)` to look up the active group. When no group is active, this returns NULL and audit rows are written with `group = NULL`.
 
 ## Installation
 
@@ -63,7 +76,7 @@ uv add sqlite-history-json
 
 ```python
 import sqlite3
-from sqlite_history_json import enable_tracking, disable_tracking, populate, restore
+from sqlite_history_json import enable_tracking, disable_tracking, populate, restore, change_group
 
 conn = sqlite3.connect("mydb.db")
 
@@ -183,19 +196,56 @@ Each entry is a dict:
     "timestamp": "2024-06-15 14:30:00.123",
     "operation": "insert",
     "pk": {"id": 1},
-    "updated_values": {"name": "Widget", "price": 9.99, "quantity": 100}
+    "updated_values": {"name": "Widget", "price": 9.99, "quantity": 100},
+    "group": 1,           # integer group id, or None
+    "group_note": "bulk import"  # note from the group, or None
 }
 ```
 
 - `pk` uses original column names (no `pk_` prefix)
 - `updated_values` preserves the JSON conventions (`{"null": 1}` for NULL, `{"hex": "..."}` for BLOBs)
 - For deletes, `updated_values` is `None`
+- `group` and `group_note` are `None` when the change was made outside a `change_group()` block
 
 ### Disable tracking
 
 ```python
 # Drops the triggers but keeps the audit table and its data
 disable_tracking(conn, "items")
+```
+
+### Group changes with optional notes
+
+Use `change_group()` to tag all audit entries created within a block with the same group id. This is useful for associating related changes (e.g., a bulk import, a migration step) and attaching a human-readable note.
+
+```python
+from sqlite_history_json import change_group
+
+# All changes inside the block share the same group
+with change_group(conn, note="bulk import from CSV") as group_id:
+    conn.execute("INSERT INTO items VALUES (1, 'Widget', 9.99, 100)")
+    conn.execute("INSERT INTO items VALUES (2, 'Gadget', 24.99, 50)")
+    conn.execute("UPDATE items SET price = 12.99 WHERE id = 1")
+
+# Changes outside the block have group = NULL
+conn.execute("INSERT INTO items VALUES (3, 'Doohickey', 4.99, 200)")
+```
+
+The context manager yields the integer group id. You can also update the note during the block:
+
+```python
+with change_group(conn, note="migration step 1") as group_id:
+    conn.execute("INSERT INTO items VALUES (1, 'Widget', 9.99, 100)")
+    # Update the note mid-transaction
+    conn.execute("UPDATE _history_json SET note = 'migration step 1 (3 rows)' WHERE id = ?", [group_id])
+```
+
+Groups work across multiple tracked tables — a single `change_group()` block groups changes to any table whose triggers are active:
+
+```python
+with change_group(conn, note="cross-table update"):
+    conn.execute("INSERT INTO items VALUES (1, 'Widget', 9.99, 100)")
+    conn.execute("INSERT INTO orders VALUES (1, 1)")  # both share the same group
 ```
 
 ### Compound primary keys
@@ -267,13 +317,25 @@ Returns the name of the restored table.
 
 ### `get_history(conn, table_name, *, limit=None)`
 
-Returns audit log entries for a table as a list of dicts, newest first. Each dict has keys: `id`, `timestamp`, `operation`, `pk`, `updated_values`.
+Returns audit log entries for a table as a list of dicts, newest first. Each dict has keys: `id`, `timestamp`, `operation`, `pk`, `updated_values`, `group`, `group_note`.
 
 - **`limit`**: Maximum number of entries to return
 
 ### `get_row_history(conn, table_name, pk_values, *, limit=None)`
 
 Same as `get_history()` but filtered to a specific row. `pk_values` is a dict mapping primary key column names to values, e.g. `{"id": 1}` or `{"user_id": 1, "role_id": 2}`.
+
+### `change_group(conn, note=None)`
+
+Context manager that groups all audit entries created within its block. Every trigger-inserted audit row will share the same `group` id. An optional `note` string can describe the batch.
+
+Yields the integer group id. The `current` marker is cleared automatically when the block exits (including on exceptions).
+
+```python
+with change_group(conn, note="migration") as group_id:
+    conn.execute("INSERT INTO items VALUES (1, 'Widget', 9.99, 100)")
+    # group_id is an integer you can reference later
+```
 
 ### `row_state_sql(conn, table_name)`
 
@@ -441,10 +503,10 @@ uv run python -m sqlite_history_json --help
 
 ## How the triggers work
 
-The UPDATE trigger uses nested `json_patch()` calls to build a JSON object containing only the columns that actually changed:
+The UPDATE trigger uses nested `json_patch()` calls to build a JSON object containing only the columns that actually changed. The `[group]` column is populated by a subquery that looks up the active change group (or returns NULL if none is active):
 
 ```sql
-INSERT INTO _history_json_items (timestamp, operation, pk_id, updated_values)
+INSERT INTO _history_json_items (timestamp, operation, pk_id, updated_values, [group])
 VALUES (
     strftime('%Y-%m-%d %H:%M:%f', 'now'),
     'update',
@@ -479,7 +541,8 @@ VALUES (
                 END
             ELSE '{}'
         END
-    )
+    ),
+    (SELECT id FROM _history_json WHERE current = 1)
 );
 ```
 
@@ -489,3 +552,5 @@ Each column gets a `CASE` expression that:
 3. If unchanged, returns `'{}'` (empty object)
 
 These are combined with `json_patch()` which merges JSON objects together, building up the final diff.
+
+The group subquery `(SELECT id FROM _history_json WHERE current = 1)` is the same in all three triggers (INSERT, UPDATE, DELETE). It returns the active group's id when called inside a `change_group()` context, or NULL otherwise.
