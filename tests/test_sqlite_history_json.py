@@ -1191,3 +1191,14 @@ class TestChangeGrouping:
         assert len(rows) == 3
         for row in rows:
             assert row["group"] == group_id
+
+    def test_only_one_current_row_allowed(self, simple_table):
+        """A unique partial index should prevent multiple current=1 rows."""
+        enable_tracking(simple_table, "items")
+        simple_table.execute(
+            "INSERT INTO _history_json (note, current) VALUES ('first', 1)"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            simple_table.execute(
+                "INSERT INTO _history_json (note, current) VALUES ('second', 1)"
+            )

@@ -42,8 +42,8 @@ def _ensure_groups_table(conn: sqlite3.Connection) -> None:
 )"""
     )
     conn.execute(
-        f"create index if not exists [{_GROUPS_TABLE}_current] "
-        f"on [{_GROUPS_TABLE}] (current)"
+        f"create unique index if not exists [{_GROUPS_TABLE}_current] "
+        f"on [{_GROUPS_TABLE}] (current) where current = 1"
     )
 
 
@@ -147,7 +147,7 @@ def _build_insert_trigger_sql(
 
     json_obj = f"json_object({', '.join(json_args)})" if json_args else "'{{}}'"
 
-    group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1)"
+    group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1 order by id desc limit 1)"
 
     return f"""create trigger if not exists [{audit_name}_insert]
 after insert on [{table_name}]
@@ -210,7 +210,7 @@ def _build_update_trigger_sql(
 
         json_expr = expr
 
-    group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1)"
+    group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1 order by id desc limit 1)"
 
     return f"""create trigger if not exists [{audit_name}_update]
 after update on [{table_name}]
@@ -237,7 +237,7 @@ def _build_delete_trigger_sql(
     )
     pk_old_refs = ", ".join(f"OLD.[{c['name']}]" for c in pk_cols)
 
-    group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1)"
+    group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1 order by id desc limit 1)"
 
     return f"""create trigger if not exists [{audit_name}_delete]
 after delete on [{table_name}]
@@ -421,7 +421,7 @@ def populate(conn: sqlite3.Connection, table_name: str) -> None:
 
         json_str = json.dumps(json_dict)
 
-        group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1)"
+        group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1 order by id desc limit 1)"
         conn.execute(
             f"insert into [{audit_name}] (timestamp, operation, {pk_insert_cols}, updated_values, [group]) "
             f"values (strftime('%Y-%m-%d %H:%M:%f', 'now'), 'insert', {pk_insert_params}, ?, "
