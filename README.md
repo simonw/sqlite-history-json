@@ -431,10 +431,12 @@ The output is a ready-to-execute SQL query using a recursive CTE and `json_patch
 # Clone and set up
 git clone https://github.com/simonw/sqlite-history-json
 cd sqlite-history-json
-uv sync
 
 # Run tests
 uv run pytest tests/ -v
+
+# Run CLI
+uv run python -m sqlite_history_json --help
 ```
 
 ## How the triggers work
