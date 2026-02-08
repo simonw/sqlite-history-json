@@ -16,6 +16,9 @@ dev = [
     "pytest"
 ]
 
+[tool.setuptools]
+packages = ["sqlite_history_json"]
+
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
