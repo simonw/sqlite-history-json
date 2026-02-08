@@ -112,12 +112,12 @@ def cmd_restore(args):
 
             # Get the original CREATE TABLE SQL and adapt it
             create_sql = conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                "select sql from sqlite_master where type='table' and name=?",
                 (args.table,),
             ).fetchone()[0]
 
             conn.execute(
-                f"ATTACH DATABASE ? AS output_db", (args.output_db,)
+                "attach database ? as output_db", (args.output_db,)
             )
             try:
                 # Create the table in the output database
@@ -146,8 +146,8 @@ def cmd_restore(args):
                 columns = _get_table_info(conn, args.table)
                 col_names = ", ".join(f"[{c['name']}]" for c in columns)
                 conn.execute(
-                    f"INSERT INTO [output_db].[{output_table}] ({col_names}) "
-                    f"SELECT {col_names} FROM [{restored}]"
+                    f"insert into [output_db].[{output_table}] ({col_names}) "
+                    f"select {col_names} from [{restored}]"
                 )
                 conn.commit()
                 print(
@@ -155,8 +155,8 @@ def cmd_restore(args):
                     file=sys.stderr,
                 )
             finally:
-                conn.execute(f"DROP TABLE IF EXISTS [{restored}]")
-                conn.execute("DETACH DATABASE output_db")
+                conn.execute(f"drop table if exists [{restored}]")
+                conn.execute("detach database output_db")
         else:
             restored = restore(conn, args.table, **restore_kwargs)
             conn.commit()

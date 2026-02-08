@@ -311,32 +311,32 @@ result = conn.execute(sql, {"pk_1": 1, "pk_2": 2, "target_id": 5}).fetchone()
 For a table `items` with primary key `id`, the generated SQL looks like:
 
 ```sql
-WITH entries AS (
-  SELECT id, operation, updated_values,
-         ROW_NUMBER() OVER (ORDER BY id) AS rn
-  FROM [_history_json_items]
-  WHERE [pk_id] = :pk
-    AND id <= :target_id
-    AND id >= (
-      SELECT MAX(id) FROM [_history_json_items]
-      WHERE [pk_id] = :pk
-        AND operation = 'insert' AND id <= :target_id
+with entries as (
+  select id, operation, updated_values,
+         row_number() over (order by id) as rn
+  from [_history_json_items]
+  where [pk_id] = :pk
+    and id <= :target_id
+    and id >= (
+      select max(id) from [_history_json_items]
+      where [pk_id] = :pk
+        and operation = 'insert' and id <= :target_id
     )
 ),
-folded AS (
-  SELECT rn, operation, updated_values AS state
-  FROM entries WHERE rn = 1
+folded as (
+  select rn, operation, updated_values as state
+  from entries where rn = 1
 
-  UNION ALL
+  union all
 
-  SELECT e.rn, e.operation,
-    CASE WHEN e.operation = 'delete' THEN NULL
-         ELSE json_patch(f.state, e.updated_values)
-    END
-  FROM folded f
-  JOIN entries e ON e.rn = f.rn + 1
+  select e.rn, e.operation,
+    case when e.operation = 'delete' then null
+         else json_patch(f.state, e.updated_values)
+    end
+  from folded f
+  join entries e on e.rn = f.rn + 1
 )
-SELECT state FROM folded ORDER BY rn DESC LIMIT 1
+select state from folded order by rn desc limit 1
 ```
 
 The `entries` CTE finds the most recent `insert` for the row at or before the target version, then collects all entries from that insert through the target. The `folded` CTE recursively applies `json_patch()` to merge each entry's changed values into the accumulated state. Handles delete-and-reinsert cycles correctly by always starting from the latest insert.
