@@ -7,7 +7,7 @@
 
 A Python library for tracking SQLite table history using a JSON audit log.
 
-Based on the pattern described in [Tracking SQLite table history using a JSON audit log](https://til.simonwillison.net/sqlite/json-audit-log) by Simon Willison.
+Based on the pattern described in [Tracking SQLite table history using a JSON audit log](https://til.simonwillison.net/sqlite/json-audit-log).
 
 ## How it works
 
