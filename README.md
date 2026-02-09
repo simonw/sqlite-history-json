@@ -487,6 +487,30 @@ python -m sqlite_history_json row-state-sql mydb.db items
 
 The output is a ready-to-execute SQL query using a recursive CTE and `json_patch()`. You can pipe it to other tools or use it directly with named parameters (`:pk` and `:target_id` for single-PK tables, `:pk_1`, `:pk_2`, ... for compound PKs).
 
+## Upgrading older databases
+
+Databases created with version 0.3a0 or earlier do not have the `[group]` column or the `_history_json` groups table. A built-in upgrade script detects and applies the necessary schema changes.
+
+Preview what would be changed:
+
+```bash
+python -m sqlite_history_json.upgrade mydb.db --dry-run
+```
+
+Apply the upgrade:
+
+```bash
+python -m sqlite_history_json.upgrade mydb.db
+```
+
+This will:
+
+1. Create the `_history_json` groups table if it doesn't exist
+2. Add the `[group]` column to any audit tables missing it
+3. Drop and recreate triggers so they populate the new column
+
+Existing audit data is preserved — pre-upgrade rows get `group = NULL`. The upgrade is idempotent: running it on an already-current database does nothing.
+
 ## Development
 
 ```bash
