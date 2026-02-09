@@ -216,7 +216,20 @@ disable_tracking(conn, "items")
 
 ### Group changes with optional notes
 
-Use `change_group()` to tag all audit entries created within a block with the same group id. This is useful for associating related changes (e.g., a bulk import, a migration step) and attaching a human-readable note.
+Change groups work at the SQL level using the `_history_json` table. During a transaction, insert a row with `current = 1` and the triggers will automatically set the `group` column on any audit entries to that row's id:
+
+```sql
+BEGIN;
+INSERT INTO _history_json (note, current) VALUES ('bulk import from CSV', 1);
+INSERT INTO items VALUES (1, 'Widget', 9.99, 100);
+INSERT INTO items VALUES (2, 'Gadget', 24.99, 50);
+UPDATE items SET price = 12.99 WHERE id = 1;
+-- Clear the current marker before committing
+UPDATE _history_json SET current = NULL WHERE current = 1;
+COMMIT;
+```
+
+The Python `change_group()` context manager is a convenient wrapper around this pattern that handles the setup and cleanup automatically:
 
 ```python
 from sqlite_history_json import change_group
