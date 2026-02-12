@@ -24,6 +24,9 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 
+[project.entry-points.datasette]
+history-json = "sqlite_history_json.datasette_plugin"
+
 [project.urls]
 Homepage = "https://github.com/simonw/sqlite-history-json"
 Changelog = "https://github.com/simonw/sqlite-history-json/releases"
