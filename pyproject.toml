@@ -15,7 +15,7 @@ dependencies = [
 dev = [
     "pytest",
     "pytest-asyncio",
-    "datasette"
+    "datasette>=1.0a24"
 ]
 
 [tool.setuptools]
