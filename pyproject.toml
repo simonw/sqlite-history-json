@@ -14,7 +14,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest",
-    "pytest-asyncio"
+    "pytest-asyncio",
+    "datasette"
 ]
 
 [tool.setuptools]
