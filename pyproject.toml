@@ -13,8 +13,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pytest",
-    "pytest-asyncio"
+    "pytest"
 ]
 
 [tool.setuptools]
