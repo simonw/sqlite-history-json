@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from itertools import count
 
 
+_TRIGGER_VERSION = 2
+
 _savepoint_counter = count(1)
 
 
@@ -84,6 +86,11 @@ def _audit_table_name(table_name: str) -> str:
     return f"_history_json_{table_name}"
 
 
+def _trigger_name(table_name: str, operation: str) -> str:
+    """Return the versioned trigger name for a given table and operation."""
+    return f"_history_json_v{_TRIGGER_VERSION}_{operation}_{table_name}"
+
+
 def _audit_pk_col_name(source_col_name: str) -> str:
     """Return the audit table column name for a source PK column."""
     return f"pk_{source_col_name}"
@@ -149,7 +156,9 @@ def _build_insert_trigger_sql(
 
     group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1)"
 
-    return f"""create trigger if not exists [{audit_name}_insert]
+    trigger = _trigger_name(table_name, "insert")
+
+    return f"""create trigger if not exists [{trigger}]
 after insert on [{table_name}]
 begin
     insert into [{audit_name}] (timestamp, operation, {audit_pk_col_names}, updated_values, [group])
@@ -221,7 +230,9 @@ def _build_update_trigger_sql(
         # No non-PK columns means nothing can change in an UPDATE
         when_clause = "when 0\n"
 
-    return f"""create trigger if not exists [{audit_name}_update]
+    trigger = _trigger_name(table_name, "update")
+
+    return f"""create trigger if not exists [{trigger}]
 after update on [{table_name}]
 {when_clause}begin
     insert into [{audit_name}] (timestamp, operation, {audit_pk_col_names}, updated_values, [group])
@@ -248,7 +259,9 @@ def _build_delete_trigger_sql(
 
     group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1)"
 
-    return f"""create trigger if not exists [{audit_name}_delete]
+    trigger = _trigger_name(table_name, "delete")
+
+    return f"""create trigger if not exists [{trigger}]
 after delete on [{table_name}]
 begin
     insert into [{audit_name}] (timestamp, operation, {audit_pk_col_names}, updated_values, [group])
@@ -376,10 +389,10 @@ def disable_tracking(
             so the operation is atomic.
     """
     def _disable_tracking_inner() -> None:
-        audit_name = _audit_table_name(table_name)
-        conn.execute(f"drop trigger if exists [{audit_name}_insert]")
-        conn.execute(f"drop trigger if exists [{audit_name}_update]")
-        conn.execute(f"drop trigger if exists [{audit_name}_delete]")
+        for op in ("insert", "update", "delete"):
+            conn.execute(
+                f"drop trigger if exists [{_trigger_name(table_name, op)}]"
+            )
 
     if atomic:
         _run_in_savepoint(conn, _disable_tracking_inner)

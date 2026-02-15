@@ -186,6 +186,55 @@ class TestEnableTracking:
         assert any("update" in t for t in triggers)
         assert any("delete" in t for t in triggers)
 
+    def test_trigger_names_are_versioned(self, simple_table):
+        """Trigger names should include a version number."""
+        from sqlite_history_json.core import _TRIGGER_VERSION
+
+        enable_tracking(simple_table, "items")
+        triggers = trigger_names(simple_table, "items")
+        expected = sorted([
+            f"_history_json_v{_TRIGGER_VERSION}_insert_items",
+            f"_history_json_v{_TRIGGER_VERSION}_update_items",
+            f"_history_json_v{_TRIGGER_VERSION}_delete_items",
+        ])
+        assert triggers == expected
+
+    def test_trigger_names_versioned_compound_pk(self, compound_pk_table):
+        """Versioned trigger names work for compound PK tables."""
+        from sqlite_history_json.core import _TRIGGER_VERSION
+
+        enable_tracking(compound_pk_table, "user_roles")
+        triggers = trigger_names(compound_pk_table, "user_roles")
+        expected = sorted([
+            f"_history_json_v{_TRIGGER_VERSION}_insert_user_roles",
+            f"_history_json_v{_TRIGGER_VERSION}_update_user_roles",
+            f"_history_json_v{_TRIGGER_VERSION}_delete_user_roles",
+        ])
+        assert triggers == expected
+
+    def test_trigger_names_versioned_special_chars(self, conn):
+        """Versioned trigger names work for tables with special characters."""
+        from sqlite_history_json.core import _TRIGGER_VERSION
+
+        conn.execute(
+            'CREATE TABLE "my-table" (id INTEGER PRIMARY KEY, val TEXT)'
+        )
+        enable_tracking(conn, "my-table")
+        triggers = trigger_names(conn, "my-table")
+        expected = sorted([
+            f"_history_json_v{_TRIGGER_VERSION}_insert_my-table",
+            f"_history_json_v{_TRIGGER_VERSION}_update_my-table",
+            f"_history_json_v{_TRIGGER_VERSION}_delete_my-table",
+        ])
+        assert triggers == expected
+
+    def test_disable_tracking_drops_versioned_triggers(self, simple_table):
+        """disable_tracking should drop the versioned triggers."""
+        enable_tracking(simple_table, "items")
+        assert len(trigger_names(simple_table, "items")) == 3
+        disable_tracking(simple_table, "items")
+        assert len(trigger_names(simple_table, "items")) == 0
+
     def test_creates_indexes(self, simple_table):
         enable_tracking(simple_table, "items")
         audit_name = "_history_json_items"
