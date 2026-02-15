@@ -330,9 +330,8 @@ class TestUpdateTrigger:
         vals = json.loads(rows[1]["updated_values"])
         assert vals["price"] == 5.99
 
-    def test_update_no_change_no_audit(self, simple_table):
-        """Updating a row to the same values should still log (trigger fires)
-        but with an empty JSON object."""
+    def test_update_no_change_skipped(self, simple_table):
+        """Updating a row to the same values should NOT create an audit entry."""
         enable_tracking(simple_table, "items")
         simple_table.execute(
             "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
@@ -341,10 +340,46 @@ class TestUpdateTrigger:
             "UPDATE items SET name = 'Widget' WHERE id = 1"
         )
         rows = get_audit_rows(simple_table, "items")
-        # The trigger still fires on UPDATE, but updated_values should be '{}'
-        assert len(rows) == 2
+        # No-op update should be skipped entirely
+        assert len(rows) == 1  # only the insert
+
+    def test_update_no_change_all_columns_skipped(self, simple_table):
+        """Setting all columns to their current values should NOT create an audit entry."""
+        enable_tracking(simple_table, "items")
+        simple_table.execute(
+            "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+        )
+        simple_table.execute(
+            "UPDATE items SET name = 'Widget', price = 9.99, quantity = 100 WHERE id = 1"
+        )
+        rows = get_audit_rows(simple_table, "items")
+        assert len(rows) == 1  # only the insert
+
+    def test_update_no_change_null_to_null_skipped(self, simple_table):
+        """Updating NULL to NULL should NOT create an audit entry."""
+        enable_tracking(simple_table, "items")
+        simple_table.execute("INSERT INTO items (id, name) VALUES (1, 'Widget')")
+        # price and quantity are already NULL
+        simple_table.execute(
+            "UPDATE items SET price = NULL WHERE id = 1"
+        )
+        rows = get_audit_rows(simple_table, "items")
+        assert len(rows) == 1  # only the insert
+
+    def test_update_partial_change_still_recorded(self, simple_table):
+        """If at least one column changes, the update IS recorded."""
+        enable_tracking(simple_table, "items")
+        simple_table.execute(
+            "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+        )
+        # name stays the same, but price changes
+        simple_table.execute(
+            "UPDATE items SET name = 'Widget', price = 19.99 WHERE id = 1"
+        )
+        rows = get_audit_rows(simple_table, "items")
+        assert len(rows) == 2  # insert + update
         vals = json.loads(rows[1]["updated_values"])
-        assert vals == {}
+        assert vals == {"price": 19.99}
 
     def test_update_blob(self, blob_table):
         enable_tracking(blob_table, "files")

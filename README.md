@@ -16,7 +16,7 @@ Based on the pattern described in [Tracking SQLite table history using a JSON au
 This is the "updated values" approach: each audit entry records the **new** values of changed columns (not the old ones). This means:
 
 - **INSERT** entries record all column values for the new row
-- **UPDATE** entries record only the columns that changed, with their new values
+- **UPDATE** entries record only the columns that changed, with their new values (no-op updates where no values actually change are skipped entirely)
 - **DELETE** entries just record that the row was deleted (the PK identifies which row)
 
 The audit log is self-contained: given only the audit table, you can fully reconstruct the tracked table's state at any point in history.
@@ -540,51 +540,45 @@ uv run python -m sqlite_history_json --help
 
 ## How the triggers work
 
-The UPDATE trigger uses nested `json_patch()` calls to build a JSON object containing only the columns that actually changed. The `[group]` column is populated by a subquery that looks up the active change group (or returns NULL if none is active):
+The UPDATE trigger uses a `WHEN` clause to skip no-op updates entirely — if no non-PK column actually changed, the trigger does not fire and no audit entry is created. This uses SQLite's `IS NOT` operator which correctly treats NULL-to-NULL as "no change":
 
 ```sql
-INSERT INTO _history_json_items (timestamp, operation, pk_id, updated_values, [group])
-VALUES (
+CREATE TRIGGER [_history_json_items_update]
+AFTER UPDATE ON [items]
+WHEN OLD.[name] IS NOT NEW.[name]
+  OR OLD.[price] IS NOT NEW.[price]
+  OR OLD.[quantity] IS NOT NEW.[quantity]
+BEGIN
+  INSERT INTO _history_json_items (timestamp, operation, pk_id, updated_values, [group])
+  VALUES (
     strftime('%Y-%m-%d %H:%M:%f', 'now'),
     'update',
     NEW.id,
     json_patch(
-        json_patch(
-            json_patch(
-                '{}',
-                CASE
-                    WHEN OLD.name IS NOT NEW.name THEN
-                        CASE
-                            WHEN NEW.name IS NULL THEN json_object('name', json_object('null', 1))
-                            ELSE json_object('name', NEW.name)
-                        END
-                    ELSE '{}'
-                END
-            ),
-            CASE
-                WHEN OLD.price IS NOT NEW.price THEN
-                    CASE
-                        WHEN NEW.price IS NULL THEN json_object('price', json_object('null', 1))
-                        ELSE json_object('price', NEW.price)
-                    END
-                ELSE '{}'
-            END
+      json_patch(
+        json_patch('{}',
+          CASE WHEN OLD.name IS NOT NEW.name THEN
+            CASE WHEN NEW.name IS NULL THEN json_object('name', json_object('null', 1))
+                 ELSE json_object('name', NEW.name) END
+          ELSE '{}' END
         ),
-        CASE
-            WHEN OLD.quantity IS NOT NEW.quantity THEN
-                CASE
-                    WHEN NEW.quantity IS NULL THEN json_object('quantity', json_object('null', 1))
-                    ELSE json_object('quantity', NEW.quantity)
-                END
-            ELSE '{}'
-        END
+        CASE WHEN OLD.price IS NOT NEW.price THEN
+          CASE WHEN NEW.price IS NULL THEN json_object('price', json_object('null', 1))
+               ELSE json_object('price', NEW.price) END
+        ELSE '{}' END
+      ),
+      CASE WHEN OLD.quantity IS NOT NEW.quantity THEN
+        CASE WHEN NEW.quantity IS NULL THEN json_object('quantity', json_object('null', 1))
+             ELSE json_object('quantity', NEW.quantity) END
+      ELSE '{}' END
     ),
     (SELECT id FROM _history_json WHERE current = 1)
-);
+  );
+END;
 ```
 
-Each column gets a `CASE` expression that:
-1. Checks if the old and new values differ (`IS NOT` handles NULL correctly)
+The `WHEN` clause checks each non-PK column for changes using `IS NOT`. Inside the trigger body, each column gets a `CASE` expression that:
+1. Checks if the old and new values differ
 2. If different, creates a JSON object with the column name and new value
 3. If unchanged, returns `'{}'` (empty object)
 
