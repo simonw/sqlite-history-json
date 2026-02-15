@@ -212,9 +212,18 @@ def _build_update_trigger_sql(
 
     group_subquery = f"(select id from [{_GROUPS_TABLE}] where current = 1)"
 
+    # Build WHEN clause: only fire when at least one non-PK column changed.
+    # Uses IS NOT (not !=) so NULL-to-NULL is correctly treated as "no change".
+    if non_pk_cols:
+        when_parts = [f"OLD.[{c['name']}] is not NEW.[{c['name']}]" for c in non_pk_cols]
+        when_clause = f"when {' or '.join(when_parts)}\n"
+    else:
+        # No non-PK columns means nothing can change in an UPDATE
+        when_clause = "when 0\n"
+
     return f"""create trigger if not exists [{audit_name}_update]
 after update on [{table_name}]
-begin
+{when_clause}begin
     insert into [{audit_name}] (timestamp, operation, {audit_pk_col_names}, updated_values, [group])
     values (
         strftime('%Y-%m-%d %H:%M:%f', 'now'),
