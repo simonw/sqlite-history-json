@@ -88,7 +88,7 @@ def _audit_table_name(table_name: str) -> str:
 
 def _trigger_name(table_name: str, operation: str) -> str:
     """Return the versioned trigger name for a given table and operation."""
-    return f"_history_json_v{_TRIGGER_VERSION}_{operation}_{table_name}"
+    return f"history_json_v{_TRIGGER_VERSION}_{operation}_{table_name}"
 
 
 def _audit_pk_col_name(source_col_name: str) -> str:

@@ -504,7 +504,7 @@ The output is a ready-to-execute SQL query using a recursive CTE and `json_patch
 
 Databases created with older versions may need schema upgrades. The upgrade script detects and applies necessary changes automatically. It handles both pre-group databases (missing `[group]` column) and databases with unversioned trigger names.
 
-Trigger names include a version number (e.g., `_history_json_v2_update_items`) so the upgrade script can detect outdated triggers by name rather than inspecting SQL bodies. When the trigger format changes in a future release, incrementing the version number is all that's needed.
+Trigger names include a version number (e.g., `history_json_v2_update_items`) so the upgrade script can detect outdated triggers by name rather than inspecting SQL bodies. When the trigger format changes in a future release, incrementing the version number is all that's needed.
 
 Preview what would be changed:
 
@@ -545,7 +545,7 @@ uv run python -m sqlite_history_json --help
 The UPDATE trigger uses a `WHEN` clause to skip no-op updates entirely — if no non-PK column actually changed, the trigger does not fire and no audit entry is created. This uses SQLite's `IS NOT` operator which correctly treats NULL-to-NULL as "no change":
 
 ```sql
-CREATE TRIGGER [_history_json_v2_update_items]
+CREATE TRIGGER [history_json_v2_update_items]
 AFTER UPDATE ON [items]
 WHEN OLD.[name] IS NOT NEW.[name]
   OR OLD.[price] IS NOT NEW.[price]

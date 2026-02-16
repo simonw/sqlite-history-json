@@ -11,7 +11,7 @@ The upgrade detects audit tables that need changes and:
 2. Adds a ``[group]`` column to each audit table that is missing it.
 3. Drops and recreates triggers with current versioned names.
 
-Trigger names include a version number (e.g. ``_history_json_v2_insert_items``)
+Trigger names include a version number (e.g. ``history_json_v2_insert_items``)
 so detection is based on name matching rather than SQL body inspection.
 """
 
@@ -165,7 +165,7 @@ def apply_upgrade(conn: sqlite3.Connection) -> list[dict]:
                 (source_table,),
             ).fetchall()
             for (trig_name,) in existing:
-                if trig_name.startswith("_history_json"):
+                if trig_name.startswith(("_history_json", "history_json_v")):
                     conn.execute(f"drop trigger if exists [{trig_name}]")
 
             # Create new versioned triggers

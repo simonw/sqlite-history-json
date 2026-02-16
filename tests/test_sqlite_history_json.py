@@ -193,9 +193,9 @@ class TestEnableTracking:
         enable_tracking(simple_table, "items")
         triggers = trigger_names(simple_table, "items")
         expected = sorted([
-            f"_history_json_v{_TRIGGER_VERSION}_insert_items",
-            f"_history_json_v{_TRIGGER_VERSION}_update_items",
-            f"_history_json_v{_TRIGGER_VERSION}_delete_items",
+            f"history_json_v{_TRIGGER_VERSION}_insert_items",
+            f"history_json_v{_TRIGGER_VERSION}_update_items",
+            f"history_json_v{_TRIGGER_VERSION}_delete_items",
         ])
         assert triggers == expected
 
@@ -206,9 +206,9 @@ class TestEnableTracking:
         enable_tracking(compound_pk_table, "user_roles")
         triggers = trigger_names(compound_pk_table, "user_roles")
         expected = sorted([
-            f"_history_json_v{_TRIGGER_VERSION}_insert_user_roles",
-            f"_history_json_v{_TRIGGER_VERSION}_update_user_roles",
-            f"_history_json_v{_TRIGGER_VERSION}_delete_user_roles",
+            f"history_json_v{_TRIGGER_VERSION}_insert_user_roles",
+            f"history_json_v{_TRIGGER_VERSION}_update_user_roles",
+            f"history_json_v{_TRIGGER_VERSION}_delete_user_roles",
         ])
         assert triggers == expected
 
@@ -222,9 +222,9 @@ class TestEnableTracking:
         enable_tracking(conn, "my-table")
         triggers = trigger_names(conn, "my-table")
         expected = sorted([
-            f"_history_json_v{_TRIGGER_VERSION}_insert_my-table",
-            f"_history_json_v{_TRIGGER_VERSION}_update_my-table",
-            f"_history_json_v{_TRIGGER_VERSION}_delete_my-table",
+            f"history_json_v{_TRIGGER_VERSION}_insert_my-table",
+            f"history_json_v{_TRIGGER_VERSION}_update_my-table",
+            f"history_json_v{_TRIGGER_VERSION}_delete_my-table",
         ])
         assert triggers == expected
 

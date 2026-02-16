@@ -565,9 +565,9 @@ class TestApplyUpgrade:
         ).fetchall()
         trigger_names = sorted(r[0] for r in triggers)
         expected = sorted([
-            f"_history_json_v{_TRIGGER_VERSION}_insert_items",
-            f"_history_json_v{_TRIGGER_VERSION}_update_items",
-            f"_history_json_v{_TRIGGER_VERSION}_delete_items",
+            f"history_json_v{_TRIGGER_VERSION}_insert_items",
+            f"history_json_v{_TRIGGER_VERSION}_update_items",
+            f"history_json_v{_TRIGGER_VERSION}_delete_items",
         ])
         assert trigger_names == expected
 
