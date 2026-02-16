@@ -5,12 +5,14 @@ Run as::
     python -m sqlite_history_json.upgrade database.db
     python -m sqlite_history_json.upgrade database.db --dry-run
 
-The upgrade detects audit tables created before change-grouping support
-was added and:
+The upgrade detects audit tables that need changes and:
 
 1. Creates the ``_history_json`` groups table (if it does not exist).
 2. Adds a ``[group]`` column to each audit table that is missing it.
-3. Drops and recreates triggers so they populate the new column.
+3. Drops and recreates triggers with current versioned names.
+
+Trigger names include a version number (e.g. ``history_json_v2_insert_items``)
+so detection is based on name matching rather than SQL body inspection.
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ from .core import (
     _get_pk_columns,
     _get_table_info,
     _GROUPS_TABLE,
+    _trigger_name,
+    _TRIGGER_VERSION,
 )
 
 
@@ -64,20 +68,26 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     )
 
 
-def _trigger_sql(conn: sqlite3.Connection, trigger_name: str) -> str | None:
-    """Return the SQL body of an existing trigger, or None."""
-    row = conn.execute(
-        "select sql from sqlite_master where type = 'trigger' and name = ?",
-        (trigger_name,),
-    ).fetchone()
-    return row[0] if row else None
+def _trigger_exists(conn: sqlite3.Connection, name: str) -> bool:
+    """Return True if a trigger with this exact name exists."""
+    return (
+        conn.execute(
+            "select count(*) from sqlite_master where type = 'trigger' and name = ?",
+            (name,),
+        ).fetchone()[0]
+        > 0
+    )
 
 
 def _trigger_needs_upgrade(conn: sqlite3.Connection, audit_name: str) -> bool:
-    """Return True if any trigger for *audit_name* is missing the group subquery."""
-    for suffix in ("_insert", "_update", "_delete"):
-        sql = _trigger_sql(conn, f"{audit_name}{suffix}")
-        if sql is not None and "[group]" not in sql:
+    """Return True if the triggers for *audit_name* are not at the current version.
+
+    Checks whether the current versioned trigger names exist. If any are
+    missing, the triggers need to be (re)created.
+    """
+    source_table = _source_table_for(audit_name)
+    for op in ("insert", "update", "delete"):
+        if not _trigger_exists(conn, _trigger_name(source_table, op)):
             return True
     return False
 
@@ -148,13 +158,17 @@ def apply_upgrade(conn: sqlite3.Connection) -> list[dict]:
             pk_cols = _get_pk_columns(columns)
             non_pk_cols = _get_non_pk_columns(columns)
 
-            # Drop old triggers
-            for suffix in ("_insert", "_update", "_delete"):
-                conn.execute(
-                    f"drop trigger if exists [{audit_name}{suffix}]"
-                )
+            # Drop ALL existing triggers on this source table that belong to us
+            existing = conn.execute(
+                "select name from sqlite_master "
+                "where type = 'trigger' and tbl_name = ?",
+                (source_table,),
+            ).fetchall()
+            for (trig_name,) in existing:
+                if trig_name.startswith(("_history_json", "history_json_v")):
+                    conn.execute(f"drop trigger if exists [{trig_name}]")
 
-            # Create new triggers (with [group] subquery)
+            # Create new versioned triggers
             conn.execute(
                 _build_insert_trigger_sql(
                     source_table, audit_name, pk_cols, non_pk_cols

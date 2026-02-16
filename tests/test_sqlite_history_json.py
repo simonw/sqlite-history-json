@@ -186,6 +186,55 @@ class TestEnableTracking:
         assert any("update" in t for t in triggers)
         assert any("delete" in t for t in triggers)
 
+    def test_trigger_names_are_versioned(self, simple_table):
+        """Trigger names should include a version number."""
+        from sqlite_history_json.core import _TRIGGER_VERSION
+
+        enable_tracking(simple_table, "items")
+        triggers = trigger_names(simple_table, "items")
+        expected = sorted([
+            f"history_json_v{_TRIGGER_VERSION}_insert_items",
+            f"history_json_v{_TRIGGER_VERSION}_update_items",
+            f"history_json_v{_TRIGGER_VERSION}_delete_items",
+        ])
+        assert triggers == expected
+
+    def test_trigger_names_versioned_compound_pk(self, compound_pk_table):
+        """Versioned trigger names work for compound PK tables."""
+        from sqlite_history_json.core import _TRIGGER_VERSION
+
+        enable_tracking(compound_pk_table, "user_roles")
+        triggers = trigger_names(compound_pk_table, "user_roles")
+        expected = sorted([
+            f"history_json_v{_TRIGGER_VERSION}_insert_user_roles",
+            f"history_json_v{_TRIGGER_VERSION}_update_user_roles",
+            f"history_json_v{_TRIGGER_VERSION}_delete_user_roles",
+        ])
+        assert triggers == expected
+
+    def test_trigger_names_versioned_special_chars(self, conn):
+        """Versioned trigger names work for tables with special characters."""
+        from sqlite_history_json.core import _TRIGGER_VERSION
+
+        conn.execute(
+            'CREATE TABLE "my-table" (id INTEGER PRIMARY KEY, val TEXT)'
+        )
+        enable_tracking(conn, "my-table")
+        triggers = trigger_names(conn, "my-table")
+        expected = sorted([
+            f"history_json_v{_TRIGGER_VERSION}_insert_my-table",
+            f"history_json_v{_TRIGGER_VERSION}_update_my-table",
+            f"history_json_v{_TRIGGER_VERSION}_delete_my-table",
+        ])
+        assert triggers == expected
+
+    def test_disable_tracking_drops_versioned_triggers(self, simple_table):
+        """disable_tracking should drop the versioned triggers."""
+        enable_tracking(simple_table, "items")
+        assert len(trigger_names(simple_table, "items")) == 3
+        disable_tracking(simple_table, "items")
+        assert len(trigger_names(simple_table, "items")) == 0
+
     def test_creates_indexes(self, simple_table):
         enable_tracking(simple_table, "items")
         audit_name = "_history_json_items"
@@ -330,9 +379,8 @@ class TestUpdateTrigger:
         vals = json.loads(rows[1]["updated_values"])
         assert vals["price"] == 5.99
 
-    def test_update_no_change_no_audit(self, simple_table):
-        """Updating a row to the same values should still log (trigger fires)
-        but with an empty JSON object."""
+    def test_update_no_change_skipped(self, simple_table):
+        """Updating a row to the same values should NOT create an audit entry."""
         enable_tracking(simple_table, "items")
         simple_table.execute(
             "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
@@ -341,10 +389,46 @@ class TestUpdateTrigger:
             "UPDATE items SET name = 'Widget' WHERE id = 1"
         )
         rows = get_audit_rows(simple_table, "items")
-        # The trigger still fires on UPDATE, but updated_values should be '{}'
-        assert len(rows) == 2
+        # No-op update should be skipped entirely
+        assert len(rows) == 1  # only the insert
+
+    def test_update_no_change_all_columns_skipped(self, simple_table):
+        """Setting all columns to their current values should NOT create an audit entry."""
+        enable_tracking(simple_table, "items")
+        simple_table.execute(
+            "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+        )
+        simple_table.execute(
+            "UPDATE items SET name = 'Widget', price = 9.99, quantity = 100 WHERE id = 1"
+        )
+        rows = get_audit_rows(simple_table, "items")
+        assert len(rows) == 1  # only the insert
+
+    def test_update_no_change_null_to_null_skipped(self, simple_table):
+        """Updating NULL to NULL should NOT create an audit entry."""
+        enable_tracking(simple_table, "items")
+        simple_table.execute("INSERT INTO items (id, name) VALUES (1, 'Widget')")
+        # price and quantity are already NULL
+        simple_table.execute(
+            "UPDATE items SET price = NULL WHERE id = 1"
+        )
+        rows = get_audit_rows(simple_table, "items")
+        assert len(rows) == 1  # only the insert
+
+    def test_update_partial_change_still_recorded(self, simple_table):
+        """If at least one column changes, the update IS recorded."""
+        enable_tracking(simple_table, "items")
+        simple_table.execute(
+            "INSERT INTO items (id, name, price, quantity) VALUES (1, 'Widget', 9.99, 100)"
+        )
+        # name stays the same, but price changes
+        simple_table.execute(
+            "UPDATE items SET name = 'Widget', price = 19.99 WHERE id = 1"
+        )
+        rows = get_audit_rows(simple_table, "items")
+        assert len(rows) == 2  # insert + update
         vals = json.loads(rows[1]["updated_values"])
-        assert vals == {}
+        assert vals == {"price": 19.99}
 
     def test_update_blob(self, blob_table):
         enable_tracking(blob_table, "files")

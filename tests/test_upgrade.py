@@ -13,6 +13,7 @@ from sqlite_history_json import (
     get_history,
     get_row_history,
 )
+from sqlite_history_json.core import _TRIGGER_VERSION
 from sqlite_history_json.upgrade import (
     _find_audit_tables,
     _has_column,
@@ -120,6 +121,115 @@ end;"""
     )
 
 
+def _create_v1_style_tracking(conn: sqlite3.Connection, table_name: str) -> None:
+    """Set up audit table and triggers with group column but old (unversioned) names.
+
+    This simulates a database created after change-grouping was added but before
+    trigger names were versioned. Triggers are named ``_history_json_{table}_{op}``
+    (the old convention) but include the [group] column.
+    """
+    columns = conn.execute(f"pragma table_info([{table_name}])").fetchall()
+    pk_cols = sorted(
+        [c for c in columns if c[5] > 0], key=lambda c: c[5]
+    )
+    non_pk_cols = [c for c in columns if c[5] == 0]
+
+    audit_name = f"_history_json_{table_name}"
+
+    pk_col_defs = ", ".join(f"[pk_{c[1]}] {c[2]}" for c in pk_cols)
+
+    # Create the groups table
+    conn.execute(
+        """create table if not exists [_history_json] (
+    id integer primary key,
+    note text,
+    current integer
+)"""
+    )
+    conn.execute(
+        "create unique index if not exists [_history_json_current] "
+        "on [_history_json] (current) where current = 1"
+    )
+
+    # Audit table WITH [group] column (v1 schema)
+    conn.execute(
+        f"""create table [{audit_name}] (
+    id integer primary key,
+    timestamp text,
+    operation text,
+    {pk_col_defs},
+    updated_values text,
+    [group] integer references [_history_json](id)
+)"""
+    )
+
+    # v1-style triggers: include [group] but use old naming convention
+    audit_pk_names = ", ".join(f"[pk_{c[1]}]" for c in pk_cols)
+    pk_new_refs = ", ".join(f"NEW.[{c[1]}]" for c in pk_cols)
+    group_sub = "(select id from [_history_json] where current = 1)"
+    json_args = ", ".join(
+        f"'{c[1]}', case when NEW.[{c[1]}] is null "
+        f"then json_object('null', 1) else NEW.[{c[1]}] end"
+        for c in non_pk_cols
+    )
+    json_obj = f"json_object({json_args})" if json_args else "'{{}}'"
+
+    # Old naming: {audit_name}_{operation}
+    conn.execute(
+        f"""create trigger [{audit_name}_insert]
+after insert on [{table_name}]
+begin
+    insert into [{audit_name}] (timestamp, operation, {audit_pk_names}, updated_values, [group])
+    values (
+        strftime('%Y-%m-%d %H:%M:%f', 'now'),
+        'insert',
+        {pk_new_refs},
+        {json_obj},
+        {group_sub}
+    );
+end;"""
+    )
+
+    conn.execute(
+        f"""create trigger [{audit_name}_update]
+after update on [{table_name}]
+begin
+    insert into [{audit_name}] (timestamp, operation, {audit_pk_names}, updated_values, [group])
+    values (
+        strftime('%Y-%m-%d %H:%M:%f', 'now'),
+        'update',
+        {pk_new_refs},
+        {json_obj},
+        {group_sub}
+    );
+end;"""
+    )
+
+    pk_old_refs = ", ".join(f"OLD.[{c[1]}]" for c in pk_cols)
+    conn.execute(
+        f"""create trigger [{audit_name}_delete]
+after delete on [{table_name}]
+begin
+    insert into [{audit_name}] (timestamp, operation, {audit_pk_names}, updated_values, [group])
+    values (
+        strftime('%Y-%m-%d %H:%M:%f', 'now'),
+        'delete',
+        {pk_old_refs},
+        null,
+        {group_sub}
+    );
+end;"""
+    )
+
+    conn.execute(
+        f"create index [{audit_name}_timestamp] on [{audit_name}] (timestamp)"
+    )
+    audit_pk_col_names = ", ".join(f"[pk_{c[1]}]" for c in pk_cols)
+    conn.execute(
+        f"create index [{audit_name}_pk] on [{audit_name}] ({audit_pk_col_names})"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -164,6 +274,21 @@ def old_db_multi(conn):
     _create_old_style_tracking(conn, "orders")
     conn.execute("insert into items (id, name, price) values (1, 'Widget', 9.99)")
     conn.execute("insert into orders (id, item_id, qty) values (1, 1, 5)")
+    return conn
+
+
+@pytest.fixture
+def v1_db(conn):
+    """Database with v1-style tracked table (has group column, unversioned triggers)."""
+    conn.execute(
+        "create table items ("
+        "id integer primary key, name text, price float, quantity integer)"
+    )
+    _create_v1_style_tracking(conn, "items")
+    conn.execute(
+        "insert into items (id, name, price, quantity) values (1, 'Widget', 9.99, 100)"
+    )
+    conn.execute("update items set price = 12.99 where id = 1")
     return conn
 
 
@@ -256,6 +381,13 @@ class TestDetectUpgrades:
             "add column [group] integer references [_history_json](id)"
         )
         actions = detect_upgrades(conn)
+        assert len(actions) == 1
+        assert actions[0]["needs_column"] is False
+        assert actions[0]["needs_triggers"] is True
+
+    def test_detects_v1_unversioned_triggers(self, v1_db):
+        """v1-style triggers (with group, but unversioned names) need upgrade."""
+        actions = detect_upgrades(v1_db)
         assert len(actions) == 1
         assert actions[0]["needs_column"] is False
         assert actions[0]["needs_triggers"] is True
@@ -424,6 +556,61 @@ class TestApplyUpgrade:
         actions = apply_upgrade(conn)
         assert len(actions) == 1
         assert actions[0]["audit_table"] == "_history_json_items"
+
+    def test_upgrades_v1_triggers_to_versioned(self, v1_db):
+        """v1-style triggers should be replaced with versioned triggers."""
+        apply_upgrade(v1_db)
+        triggers = v1_db.execute(
+            "select name from sqlite_master where type='trigger' and tbl_name='items'"
+        ).fetchall()
+        trigger_names = sorted(r[0] for r in triggers)
+        expected = sorted([
+            f"history_json_v{_TRIGGER_VERSION}_insert_items",
+            f"history_json_v{_TRIGGER_VERSION}_update_items",
+            f"history_json_v{_TRIGGER_VERSION}_delete_items",
+        ])
+        assert trigger_names == expected
+
+    def test_v1_upgrade_preserves_history(self, v1_db):
+        """Upgrading from v1 should preserve existing audit data."""
+        before = v1_db.execute(
+            "select id, timestamp, operation, pk_id, updated_values "
+            "from [_history_json_items] order by id"
+        ).fetchall()
+        apply_upgrade(v1_db)
+        after = v1_db.execute(
+            "select id, timestamp, operation, pk_id, updated_values "
+            "from [_history_json_items] order by id"
+        ).fetchall()
+        assert before == after
+
+    def test_v1_upgrade_old_triggers_removed(self, v1_db):
+        """Old unversioned trigger names should be gone after upgrade."""
+        apply_upgrade(v1_db)
+        old_trigger = v1_db.execute(
+            "select name from sqlite_master where type='trigger' "
+            "and name = '_history_json_items_update'"
+        ).fetchone()
+        assert old_trigger is None
+
+    def test_v1_upgrade_inserts_work(self, v1_db):
+        """INSERTs should work after upgrading from v1."""
+        apply_upgrade(v1_db)
+        v1_db.execute(
+            "insert into items (id, name, price, quantity) "
+            "values (2, 'Gadget', 5.99, 50)"
+        )
+        row = v1_db.execute(
+            "select [group] from [_history_json_items] order by id desc limit 1"
+        ).fetchone()
+        assert row[0] is None
+
+    def test_v1_upgrade_idempotent(self, v1_db):
+        """Upgrading v1 twice should be safe."""
+        actions1 = apply_upgrade(v1_db)
+        assert len(actions1) == 1
+        actions2 = apply_upgrade(v1_db)
+        assert actions2 == []
 
     def test_upgrade_with_existing_data_and_new_change_group(self, old_db):
         """Full round-trip: old data, upgrade, new grouped changes, query all."""

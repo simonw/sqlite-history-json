@@ -16,7 +16,7 @@ Based on the pattern described in [Tracking SQLite table history using a JSON au
 This is the "updated values" approach: each audit entry records the **new** values of changed columns (not the old ones). This means:
 
 - **INSERT** entries record all column values for the new row
-- **UPDATE** entries record only the columns that changed, with their new values
+- **UPDATE** entries record only the columns that changed, with their new values (no-op updates where no values actually change are skipped entirely)
 - **DELETE** entries just record that the row was deleted (the PK identifies which row)
 
 The audit log is self-contained: given only the audit table, you can fully reconstruct the tracked table's state at any point in history.
@@ -29,34 +29,121 @@ The audit log is self-contained: given only the audit table, you can fully recon
 | `NULL` | `{"null": 1}` (because `json_patch()` treats bare `null` as "remove key") |
 | BLOB | `{"hex": "DEADBEEF"}` (hex-encoded binary) |
 
-### Audit table schema
+### Example SQL schema
 
-For a table called `items` with primary key `id`, the audit table `_history_json_items` looks like:
+For a table called `items` with columns `id`, `name`, `price`, and `quantity`, calling `enable_tracking()` creates the following schema:
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | INTEGER PRIMARY KEY | Auto-incrementing version number |
-| `timestamp` | TEXT | ISO-8601 datetime with microsecond precision |
-| `operation` | TEXT | `'insert'`, `'update'`, or `'delete'` |
-| `pk_id` | (matches source PK type) | The primary key of the tracked row (prefixed with `pk_`) |
-| `updated_values` | TEXT | JSON object of changed columns (NULL for deletes) |
-| `group` | INTEGER | Foreign key to `_history_json.id` (NULL when no group is active) |
+<!-- [[[cog
+import cog
+import sqlite3
+import sqlite_history_json
+db = sqlite3.connect(":memory:")
+db.execute("create table items (id integer primary key, name text, price float, quantity integer)")
+sqlite_history_json.enable_tracking(db, "items", populate_table=False)
+cog.out("```sql\n")
+cog.outl(";\n\n".join(r[0] for r in db.execute("select sql from sqlite_master").fetchall() if r[0]))
+cog.out("\n```")
+]]] -->
+```sql
+CREATE TABLE items (id integer primary key, name text, price float, quantity integer);
+
+CREATE TABLE [_history_json] (
+    id integer primary key,
+    note text,
+    current integer
+);
+
+CREATE UNIQUE INDEX [_history_json_current] on [_history_json] (current) where current = 1;
+
+CREATE TABLE [_history_json_items] (
+    id integer primary key,
+    timestamp text,
+    operation text,
+    [pk_id] INTEGER,
+    updated_values text,
+    [group] integer references [_history_json](id)
+);
+
+CREATE TRIGGER [history_json_v2_insert_items]
+after insert on [items]
+begin
+    insert into [_history_json_items] (timestamp, operation, [pk_id], updated_values, [group])
+    values (
+        strftime('%Y-%m-%d %H:%M:%f', 'now'),
+        'insert',
+        NEW.[id],
+        json_object('name', case when NEW.[name] is null then json_object('null', 1) else NEW.[name] end, 'price', case when NEW.[price] is null then json_object('null', 1) else NEW.[price] end, 'quantity', case when NEW.[quantity] is null then json_object('null', 1) else NEW.[quantity] end),
+        (select id from [_history_json] where current = 1)
+    );
+end;
+
+CREATE TRIGGER [history_json_v2_update_items]
+after update on [items]
+when OLD.[name] is not NEW.[name] or OLD.[price] is not NEW.[price] or OLD.[quantity] is not NEW.[quantity]
+begin
+    insert into [_history_json_items] (timestamp, operation, [pk_id], updated_values, [group])
+    values (
+        strftime('%Y-%m-%d %H:%M:%f', 'now'),
+        'update',
+        NEW.[id],
+        json_patch(
+            json_patch(
+            json_patch(
+            '{}',
+            case
+                when OLD.[name] is not NEW.[name] then
+                    case
+                        when NEW.[name] is null then json_object('name', json_object('null', 1))
+                        else json_object('name', NEW.[name])
+                    end
+                else '{}'
+            end
+        ),
+            case
+                when OLD.[price] is not NEW.[price] then
+                    case
+                        when NEW.[price] is null then json_object('price', json_object('null', 1))
+                        else json_object('price', NEW.[price])
+                    end
+                else '{}'
+            end
+        ),
+            case
+                when OLD.[quantity] is not NEW.[quantity] then
+                    case
+                        when NEW.[quantity] is null then json_object('quantity', json_object('null', 1))
+                        else json_object('quantity', NEW.[quantity])
+                    end
+                else '{}'
+            end
+        ),
+        (select id from [_history_json] where current = 1)
+    );
+end;
+
+CREATE TRIGGER [history_json_v2_delete_items]
+after delete on [items]
+begin
+    insert into [_history_json_items] (timestamp, operation, [pk_id], updated_values, [group])
+    values (
+        strftime('%Y-%m-%d %H:%M:%f', 'now'),
+        'delete',
+        OLD.[id],
+        null,
+        (select id from [_history_json] where current = 1)
+    );
+end;
+
+CREATE INDEX [_history_json_items_timestamp] on [_history_json_items] (timestamp);
+
+CREATE INDEX [_history_json_items_pk] on [_history_json_items] ([pk_id])
+
+```
+<!-- [[[end]]] -->
 
 Primary key columns in the audit table are always prefixed with `pk_` to distinguish them from the audit table's own columns. For compound primary keys, each PK column gets its own `pk_`-prefixed column (e.g., `pk_user_id`, `pk_role_id`).
 
-Indexes are automatically created on `timestamp` and the PK column(s) for efficient querying.
-
-### Change groups table
-
-A shared `_history_json` table (no suffix) is created when tracking is first enabled. It stores change-group metadata:
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | INTEGER PRIMARY KEY | Auto-incrementing group identifier |
-| `note` | TEXT | Optional description of the batch of changes |
-| `current` | INTEGER | Set to `1` during an active `change_group()` block, otherwise NULL |
-
-The `current` column is indexed. During a `change_group()` context, triggers use `(SELECT id FROM _history_json WHERE current = 1)` to look up the active group. When no group is active, this returns NULL and audit rows are written with `group = NULL`.
+The `_history_json` table (no suffix) stores change-group metadata. During a `change_group()` context, triggers use `(SELECT id FROM _history_json WHERE current = 1)` to look up the active group. When no group is active, this returns NULL and audit rows are written with `group = NULL`.
 
 ## Installation
 
@@ -502,7 +589,9 @@ The output is a ready-to-execute SQL query using a recursive CTE and `json_patch
 
 ## Upgrading older databases
 
-Databases created with version 0.3a0 or earlier do not have the `[group]` column or the `_history_json` groups table. A built-in upgrade script detects and applies the necessary schema changes.
+Databases created with older versions may need schema upgrades. The upgrade script detects and applies necessary changes automatically. It handles both pre-group databases (missing `[group]` column) and databases with unversioned trigger names.
+
+Trigger names include a version number (e.g., `history_json_v2_update_items`) so the upgrade script can detect outdated triggers by name rather than inspecting SQL bodies. When the trigger format changes in a future release, incrementing the version number is all that's needed.
 
 Preview what would be changed:
 
@@ -520,7 +609,7 @@ This will:
 
 1. Create the `_history_json` groups table if it doesn't exist
 2. Add the `[group]` column to any audit tables missing it
-3. Drop and recreate triggers so they populate the new column
+3. Drop and recreate triggers with current versioned names
 
 Existing audit data is preserved — pre-upgrade rows get `group = NULL`. The upgrade is idempotent: running it on an already-current database does nothing.
 
@@ -540,54 +629,10 @@ uv run python -m sqlite_history_json --help
 
 ## How the triggers work
 
-The UPDATE trigger uses nested `json_patch()` calls to build a JSON object containing only the columns that actually changed. The `[group]` column is populated by a subquery that looks up the active change group (or returns NULL if none is active):
+The trigger SQL is shown in the [schema above](#example-sql-schema). Key details:
 
-```sql
-INSERT INTO _history_json_items (timestamp, operation, pk_id, updated_values, [group])
-VALUES (
-    strftime('%Y-%m-%d %H:%M:%f', 'now'),
-    'update',
-    NEW.id,
-    json_patch(
-        json_patch(
-            json_patch(
-                '{}',
-                CASE
-                    WHEN OLD.name IS NOT NEW.name THEN
-                        CASE
-                            WHEN NEW.name IS NULL THEN json_object('name', json_object('null', 1))
-                            ELSE json_object('name', NEW.name)
-                        END
-                    ELSE '{}'
-                END
-            ),
-            CASE
-                WHEN OLD.price IS NOT NEW.price THEN
-                    CASE
-                        WHEN NEW.price IS NULL THEN json_object('price', json_object('null', 1))
-                        ELSE json_object('price', NEW.price)
-                    END
-                ELSE '{}'
-            END
-        ),
-        CASE
-            WHEN OLD.quantity IS NOT NEW.quantity THEN
-                CASE
-                    WHEN NEW.quantity IS NULL THEN json_object('quantity', json_object('null', 1))
-                    ELSE json_object('quantity', NEW.quantity)
-                END
-            ELSE '{}'
-        END
-    ),
-    (SELECT id FROM _history_json WHERE current = 1)
-);
-```
-
-Each column gets a `CASE` expression that:
-1. Checks if the old and new values differ (`IS NOT` handles NULL correctly)
-2. If different, creates a JSON object with the column name and new value
-3. If unchanged, returns `'{}'` (empty object)
-
-These are combined with `json_patch()` which merges JSON objects together, building up the final diff.
-
-The group subquery `(SELECT id FROM _history_json WHERE current = 1)` is the same in all three triggers (INSERT, UPDATE, DELETE). It returns the active group's id when called inside a `change_group()` context, or NULL otherwise.
+- The **INSERT** trigger records all non-PK column values as a JSON object using `json_object()`.
+- The **UPDATE** trigger uses a `WHEN` clause to skip no-op updates entirely — if no non-PK column actually changed (checked via `IS NOT`, which handles NULL correctly), the trigger does not fire. Inside the body, nested `json_patch()` calls build a JSON object containing only the columns that differ.
+- The **DELETE** trigger records `NULL` for `updated_values`.
+- All three triggers populate the `[group]` column via `(SELECT id FROM _history_json WHERE current = 1)`, which returns the active change group id or NULL.
+- Trigger names include a version number (e.g., `history_json_v2_update_items`) so the [upgrade module](#upgrading-older-databases) can detect outdated triggers by name.
